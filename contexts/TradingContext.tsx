@@ -976,6 +976,13 @@ export function TradingProvider({ children }: { children: ReactNode }) {
         tpSlNotifiedRef.current.sl = true;
         updateSignalOutcome(activeSignal.id, "win");
         setActiveSignal(null);
+        if (BACKEND_URL) {
+          fetch(`${BACKEND_URL}/api/ai/outcome`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ signalId: activeSignal.id, outcome: "win" }),
+          }).catch(() => {});
+        }
         if (notificationEnabled && Platform.OS !== "web") {
           sendTPAlert({
             trend: activeSignal.trend,
@@ -997,6 +1004,13 @@ export function TradingProvider({ children }: { children: ReactNode }) {
         tpSlNotifiedRef.current.tp = true;
         updateSignalOutcome(activeSignal.id, "loss");
         setActiveSignal(null);
+        if (BACKEND_URL) {
+          fetch(`${BACKEND_URL}/api/ai/outcome`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ signalId: activeSignal.id, outcome: "loss" }),
+          }).catch(() => {});
+        }
         if (notificationEnabled && Platform.OS !== "web") {
           sendSLAlert({
             trend: activeSignal.trend,

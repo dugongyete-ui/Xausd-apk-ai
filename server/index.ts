@@ -208,21 +208,24 @@ async function configureExpoAndLanding(app: express.Application) {
   app.use(express.static(path.resolve(process.cwd(), "static-build")));
 
   // Proxy web browser requests to Expo web dev server (port 8081)
+  // Uses path filter to exclude /api routes
   try {
     const { createProxyMiddleware } = await import("http-proxy-middleware");
-    app.use(
-      createProxyMiddleware({
-        target: "http://localhost:8081",
-        changeOrigin: true,
-        ws: false,
-        on: {
-          error: (_err: unknown, _req: unknown, res: unknown) => {
-            (res as import("express").Response).status(502).send("Expo web server not ready yet");
-          },
+    const proxy = createProxyMiddleware({
+      target: "http://localhost:8081",
+      changeOrigin: true,
+      ws: false,
+      on: {
+        error: (_err: unknown, _req: unknown, res: unknown) => {
+          (res as import("express").Response).status(502).send("Expo web server not ready yet");
         },
-      })
-    );
-    log("Expo web proxy: forwarding non-static requests to port 8081");
+      },
+    });
+    app.use((req: Request, res: Response, next: NextFunction) => {
+      if (req.path.startsWith("/api")) return next();
+      return proxy(req, res, next);
+    });
+    log("Expo web proxy: forwarding non-api requests to port 8081");
   } catch {
     log("http-proxy-middleware not available, skipping web proxy");
   }

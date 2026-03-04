@@ -1,5 +1,6 @@
 import WebSocket from "ws";
 import https from "https";
+import { aiService } from "./aiService";
 
 // ─── Expo Push Notification API ───────────────────────────────────────────────
 const EXPO_PUSH_URL = "exp.host";
@@ -721,7 +722,23 @@ class DerivService {
           riskReward,
         }).catch((e) => console.error("[PushNotif] Error:", e));
       }
+
+      // ── Trigger AI recommendation (non-blocking) ───────────────────────────
+      const snapshot = this.getSnapshot();
+      aiService.generateSignalRecommendation(signal, snapshot).catch((e) =>
+        console.error("[AIService] Signal recommendation error:", e)
+      );
     }
+  }
+
+  // ─── AI Outcome Commentary ─────────────────────────────────────────────────
+  triggerOutcomeCommentary(signalId: string, outcome: "win" | "loss"): void {
+    const signal = this.signalHistory.find((s) => s.id === signalId);
+    if (!signal) return;
+    const snapshot = this.getSnapshot();
+    aiService.generateOutcomeCommentary(signal, outcome, snapshot).catch((e) =>
+      console.error("[AIService] Outcome commentary error:", e)
+    );
   }
 
   // ─── Public state accessors ───────────────────────────────────────────────

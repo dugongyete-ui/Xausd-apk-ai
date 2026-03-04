@@ -195,6 +195,32 @@ Atau cek di: https://expo.dev/accounts/[username]/projects/fibotrader/builds
 - Tidak perlu Google Play — APK langsung install (Enable "Install from unknown sources" di Android)
 - Build cloud gratis 30 build/bulan di Expo free tier
 
+## AI Integration (LIBARTIN AI)
+
+### File
+- `server/aiService.ts` — AI service utama
+- `components/AIAdvisor.tsx` — Frontend AI chat component
+- `server/routes.ts` — Endpoint `/api/ai/*`
+
+### Fitur
+- Otomatis generate rekomendasi saat sinyal BUY/SELL terdeteksi (tanpa request user)
+- Otomatis generate komentar saat TP tercapai (WIN) atau SL tercapai (LOSS)
+- User bisa chat bebas tanya kondisi pasar, analisis teknikal, dll
+- Ingatan konteks percakapan (max 3 exchange terakhir)
+- Respons bersih tanpa markdown — semua karakter format dihapus oleh stripMarkdown()
+- System prompt ketat mencegah halusinasi (hanya bicara berdasarkan data aktual)
+
+### API Provider
+- Pollinations AI: `https://text.pollinations.ai/v1/chat/completions` (model openai, gratis, tanpa API key)
+
+### Endpoints
+- `GET /api/ai/messages` — ambil pesan AI terbaru (dipolling frontend setiap 6 detik)
+- `POST /api/ai/chat` — user kirim pertanyaan ke AI
+- `POST /api/ai/outcome` — lapor TP/SL outcome agar AI generate komentar
+
+### Proxy Fix
+`server/index.ts` diperbaiki: proxy Expo web (`/`) tidak lagi mengintersep request `/api`
+
 ## Workflows
 - **Start Backend**: `npm run server:dev` (port 5000)
 - **Start Frontend**: `npm run expo:dev` (port 8081)

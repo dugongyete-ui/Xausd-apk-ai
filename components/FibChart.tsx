@@ -140,9 +140,12 @@ export function FibChart() {
     }
 
     // Start from the earlier of the two swing candles (with 2 candles of context)
-    const startIdx = highIdx >= 0 && lowIdx >= 0
+    const swingStart = highIdx >= 0 && lowIdx >= 0
       ? Math.max(0, Math.min(highIdx, lowIdx) - 2)
       : src.length - visibleCount;
+
+    // Guarantee minimum visibleCount candles so candles don't become too wide
+    const startIdx = Math.min(swingStart, Math.max(0, src.length - visibleCount));
 
     const sliced = src.slice(startIdx);
     // Cap at 80 candles so they remain readable
@@ -173,20 +176,21 @@ export function FibChart() {
     return isNaN(v) ? null : v;
   }, [ema200Series]);
 
-  // ── Range: smart expansion — include fib levels but prevent huge empty gaps ──
+  // ── Range: use only last 30 candles for price range to keep chart tight ──
   const { lo, hi } = useMemo(() => {
     if (visibleCandles.length === 0) return { lo: 3200, hi: 3300 };
-    let loV = Math.min(...visibleCandles.map((c) => c.low));
-    let hiV = Math.max(...visibleCandles.map((c) => c.high));
+    // Use only the most recent 30 candles for range, not the entire visible window
+    // (older candles from swing context can have very different prices)
+    const rangeCandles = visibleCandles.slice(-30);
+    let loV = Math.min(...rangeCandles.map((c) => c.low));
+    let hiV = Math.max(...rangeCandles.map((c) => c.high));
     if (currentPrice !== null) {
       loV = Math.min(loV, currentPrice);
       hiV = Math.max(hiV, currentPrice);
     }
     if (fibLevels) {
-      // Candle window already includes swingHigh/swingLow candles, just ensure bounds
       hiV = Math.max(hiV, fibLevels.swingHigh);
       loV = Math.min(loV, fibLevels.swingLow);
-      // Always include extension (-27% TP) — it's only 27% below swingLow
       loV = Math.min(loV, fibLevels.extensionNeg27);
     }
     const pad = (hiV - loV) * 0.05;

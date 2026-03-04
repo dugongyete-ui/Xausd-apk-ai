@@ -1054,13 +1054,13 @@ export function TradingProvider({ children }: { children: ReactNode }) {
       timestampUTC: new Date().toUTCString(),
       fibLevels: mockFib,
       status: "active",
-      signalCandleEpoch: Math.floor(Date.now() / 1000),
+      signalCandleEpoch: m5Candles.length > 0 ? m5Candles[m5Candles.length - 1].epoch : Math.floor(Date.now() / 1000),
       confirmationType: "rejection",
       outcome: "pending",
     };
     setActiveSignal(demo);
     saveSignal(demo, demoId);
-  }, [currentPrice, saveSignal]);
+  }, [currentPrice, saveSignal, m5Candles]);
 
   const clearDemoSignal = React.useCallback(() => {
     setActiveSignal(null);

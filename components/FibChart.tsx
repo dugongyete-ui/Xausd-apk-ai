@@ -437,41 +437,85 @@ export function FibChart() {
             );
           })}
 
-          {/* ── Signal badge (BUY / SELL) on candle ── */}
+          {/* ── Signal candle highlight + BUY/SELL badge ── */}
           {currentSignal && (() => {
             const idx = visibleCandles.findIndex((c) => c.epoch === currentSignal.signalCandleEpoch);
             const signalIsBull = currentSignal.trend === "Bullish";
             const col = signalIsBull ? C.green : C.red;
+            const colGlow = signalIsBull ? "#22C55E" : "#EF4444";
             const badgeLabel = signalIsBull ? "▲ BUY" : "▼ SELL";
             const confirmLabel = currentSignal.confirmationType === "rejection" ? "Pin Bar" : "Engulfing";
-            const cx = idx >= 0 ? idx * candleW + candleW / 2 : plotW * 0.8;
+
+            // If the signal candle is in view, highlight it
             const refCandle = idx >= 0 ? visibleCandles[idx] : null;
-            const bW = 68;
-            const bH = 28;
+            const cx = idx >= 0 ? idx * candleW + candleW / 2 : plotW - 40;
+
+            const bW = 72;
+            const bH = 32;
             const lx = Math.min(Math.max(cx - bW / 2, 2), plotW - bW - 4);
 
             if (signalIsBull) {
-              const tipY = refCandle ? priceToY(refCandle.high, lo, hi, plotH) - 4 : priceToY(currentSignal.entryPrice, lo, hi, plotH) - 4;
-              const labelY = Math.max(TOP_PAD + 2, tipY - bH - 6);
+              const candleTopY = refCandle ? priceToY(refCandle.high, lo, hi, plotH) : priceToY(currentSignal.entryPrice, lo, hi, plotH);
+              const candleBotY = refCandle ? priceToY(refCandle.low, lo, hi, plotH) : candleTopY + 20;
+              const tipY = candleTopY - 3;
+              const labelY = Math.max(TOP_PAD + 2, tipY - bH - 8);
               return (
                 <G>
-                  <Line x1={cx} y1={tipY} x2={cx} y2={labelY + bH} stroke={col} strokeWidth={1} opacity={0.7} />
-                  <Polygon points={`${cx - 5},${tipY} ${cx + 5},${tipY} ${cx},${tipY - 6}`} fill={col} />
-                  <Rect x={lx} y={labelY} width={bW} height={bH} fill={col} rx={4} />
-                  <SvgText x={lx + bW / 2} y={labelY + 12} fill="#fff" fontSize={10} fontWeight="bold" textAnchor="middle">{badgeLabel}</SvgText>
-                  <SvgText x={lx + bW / 2} y={labelY + 23} fill="#fff" fontSize={7} textAnchor="middle" opacity={0.9}>{confirmLabel}</SvgText>
+                  {/* Candle glow outline */}
+                  {refCandle && (
+                    <Rect
+                      x={cx - candleW * 0.6}
+                      y={candleTopY - 3}
+                      width={candleW * 1.2}
+                      height={candleBotY - candleTopY + 6}
+                      fill="none"
+                      stroke={colGlow}
+                      strokeWidth={2}
+                      opacity={0.85}
+                      rx={2}
+                    />
+                  )}
+                  {/* Vertical connector */}
+                  <Line x1={cx} y1={tipY} x2={cx} y2={labelY + bH} stroke={colGlow} strokeWidth={1.5} opacity={0.8} />
+                  {/* Arrow tip */}
+                  <Polygon points={`${cx - 6},${tipY} ${cx + 6},${tipY} ${cx},${tipY - 7}`} fill={colGlow} />
+                  {/* Badge */}
+                  <Rect x={lx} y={labelY} width={bW} height={bH} fill={colGlow} rx={5} />
+                  <Rect x={lx + 1} y={labelY + 1} width={bW - 2} height={bH - 2} fill="none" stroke="#ffffff" strokeWidth={0.8} opacity={0.3} rx={4} />
+                  <SvgText x={lx + bW / 2} y={labelY + 14} fill="#fff" fontSize={12} fontWeight="bold" textAnchor="middle">{badgeLabel}</SvgText>
+                  <SvgText x={lx + bW / 2} y={labelY + 26} fill="#fff" fontSize={7.5} textAnchor="middle" opacity={0.9}>{confirmLabel}</SvgText>
                 </G>
               );
             } else {
-              const tipY = refCandle ? priceToY(refCandle.low, lo, hi, plotH) + 4 : priceToY(currentSignal.entryPrice, lo, hi, plotH) + 4;
-              const labelY = Math.min(tipY + 6, TOP_PAD + plotH - bH - 2);
+              const candleTopY = refCandle ? priceToY(refCandle.high, lo, hi, plotH) : priceToY(currentSignal.entryPrice, lo, hi, plotH);
+              const candleBotY = refCandle ? priceToY(refCandle.low, lo, hi, plotH) : candleTopY + 20;
+              const tipY = candleBotY + 3;
+              const labelY = Math.min(tipY + 8, TOP_PAD + plotH - bH - 2);
               return (
                 <G>
-                  <Line x1={cx} y1={tipY} x2={cx} y2={labelY} stroke={col} strokeWidth={1} opacity={0.7} />
-                  <Polygon points={`${cx - 5},${tipY} ${cx + 5},${tipY} ${cx},${tipY + 6}`} fill={col} />
-                  <Rect x={lx} y={labelY} width={bW} height={bH} fill={col} rx={4} />
-                  <SvgText x={lx + bW / 2} y={labelY + 12} fill="#fff" fontSize={10} fontWeight="bold" textAnchor="middle">{badgeLabel}</SvgText>
-                  <SvgText x={lx + bW / 2} y={labelY + 23} fill="#fff" fontSize={7} textAnchor="middle" opacity={0.9}>{confirmLabel}</SvgText>
+                  {/* Candle glow outline */}
+                  {refCandle && (
+                    <Rect
+                      x={cx - candleW * 0.6}
+                      y={candleTopY - 3}
+                      width={candleW * 1.2}
+                      height={candleBotY - candleTopY + 6}
+                      fill="none"
+                      stroke={colGlow}
+                      strokeWidth={2}
+                      opacity={0.85}
+                      rx={2}
+                    />
+                  )}
+                  {/* Vertical connector */}
+                  <Line x1={cx} y1={tipY} x2={cx} y2={labelY} stroke={colGlow} strokeWidth={1.5} opacity={0.8} />
+                  {/* Arrow tip */}
+                  <Polygon points={`${cx - 6},${tipY} ${cx + 6},${tipY} ${cx},${tipY + 7}`} fill={colGlow} />
+                  {/* Badge */}
+                  <Rect x={lx} y={labelY} width={bW} height={bH} fill={colGlow} rx={5} />
+                  <Rect x={lx + 1} y={labelY + 1} width={bW - 2} height={bH - 2} fill="none" stroke="#ffffff" strokeWidth={0.8} opacity={0.3} rx={4} />
+                  <SvgText x={lx + bW / 2} y={labelY + 14} fill="#fff" fontSize={12} fontWeight="bold" textAnchor="middle">{badgeLabel}</SvgText>
+                  <SvgText x={lx + bW / 2} y={labelY + 26} fill="#fff" fontSize={7.5} textAnchor="middle" opacity={0.9}>{confirmLabel}</SvgText>
                 </G>
               );
             }

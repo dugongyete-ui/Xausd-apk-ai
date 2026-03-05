@@ -165,90 +165,130 @@ function calcATR(candles: Candle[], period: number): number {
   return trs.slice(-period).reduce((a, b) => a + b, 0) / period;
 }
 
-// Swing detection — responsif terhadap pergerakan market terbaru.
+// ─── Impulse Wave Detection ───────────────────────────────────────────────────
+// Cari impulse wave M15 terakhir yang jelas berdasarkan STRUKTUR swing, bukan
+// hitungan candle tetap.
 //
-// ANCHOR (titik utama Fibonacci):
-//   Bearish → Fractal HIGH terbaru (5-bar: high[i] > 4 neighbors, EMA50 < EMA200)
-//   Bullish → Fractal LOW terbaru (5-bar: low[i] < 4 neighbors, EMA50 > EMA200)
-//   Anchor hanya boleh candle yang SUDAH CLOSED (loop dari n-4).
-//   Ini mencegah repaint: anchor tidak berubah-ubah selama candle masih live.
+// Kriteria impulse valid:
+//  ① Span: 5–20 candle M15 (gerakan satu arah, bukan sideways)
+//  ② Range minimal: 8 poin (filter noise)
+//  ③ Arah bersih: tidak ada candle yang break > 25% range dari ujung start
+//  ④ Trending: rata-rata close paruh kedua > paruh pertama (bullish)
+//     atau rata-rata close paruh kedua < paruh pertama (bearish)
+//  ⑤ EMA alignment: EMA50 > EMA200 untuk bullish, EMA50 < EMA200 untuk bearish
 //
-// PAIR EXTREME (ujung range Fibonacci):
-//   Bearish → SwingLow  = LOW TERKECIL dalam 80 candle SEBELUM anchor
-//   Bullish → SwingHigh = HIGH TERBESAR dalam 80 candle SEBELUM anchor
-//   Tidak perlu fractal — cukup extreme price aktual.
-//   Ini membuat Fibonacci responsif: ketika market cetak low baru,
-//   SwingLow langsung update dan zona Fib bergeser.
+// Cara tarik:
+//  Uptrend:   SwingLow (start) → SwingHigh (end)  anchorEpoch = SwingHigh.epoch
+//  Downtrend: SwingHigh (start) → SwingLow (end)  anchorEpoch = SwingLow.epoch
 //
-// Update trigger:
-//   Fibonacci update ketika: anchorEpoch berubah (fractal baru)
-//   ATAU pairValue berubah (new extreme terbaru untuk fractal yang sama).
-//
-// anchorEpoch = epoch candle fractal → kunci stabilitas anchor.
+// Fibonacci kemudian dihitung sebagai retracement dari impulse tersebut.
 function findSwings(
   candles: Candle[],
   trend: "Bullish" | "Bearish"
 ): { swingHigh: number; swingLow: number; anchorEpoch: number } | null {
-  const LOOKBACK = Math.min(candles.length, 150); // Diperluas: lebih banyak candle untuk swing detection
+  const LOOKBACK = Math.min(candles.length, 120);
   const slice = candles.slice(-LOOKBACK);
   const n = slice.length;
-  if (n < 10) return null;
+  if (n < 12) return null;
 
   const closes = candles.map((c) => c.close);
   const ema50Full = calcEMAFull(closes, EMA50_PERIOD);
   const ema200Full = calcEMAFull(closes, EMA200_PERIOD);
   const offset = candles.length - LOOKBACK;
 
-  if (trend === "Bearish") {
-    // Cari Fractal HIGH terbaru (anchor): 3-bar fractal (1 neighbor kiri & kanan)
-    // n-2: minimal 2 candle closed setelah fractal (lebih cepat dari 4-bar)
-    for (let i = n - 3; i >= 2; i--) {
-      const c = slice[i];
-      // 3-bar fractal: lebih responsif
-      const isSwingHigh =
-        c.high > slice[i - 1].high && c.high > slice[i + 1].high;
-      if (!isSwingHigh) continue;
-
-      // EMA alignment: EMA50 < EMA200 di candle fractal (trend bearish)
-      const absI = offset + i;
-      const e50 = ema50Full[absI];
-      const e200 = ema200Full[absI];
-      if (isNaN(e50) || isNaN(e200) || e50 >= e200) continue;
-
-      // SwingLow = LOW TERKECIL di semua candle sebelum anchor dalam window
-      // Full-window search: tidak dibatasi PAIR_LOOKBACK, ambil absolute minimum
-      let swingLow = Infinity;
-      for (let j = 0; j < i; j++) {
-        if (slice[j].low < swingLow) swingLow = slice[j].low;
-      }
-      if (!isFinite(swingLow)) continue;
-      if (c.high - swingLow < 5) continue; // Minimum range 5 pts
-
-      return { swingHigh: c.high, swingLow, anchorEpoch: c.epoch };
+  // Kumpulkan semua swing high dan low lokal (3-bar fractal)
+  // Tidak pakai candle terakhir (live) untuk hindari repaint
+  const swingHighs: number[] = [];
+  const swingLows: number[] = [];
+  for (let i = 1; i < n - 1; i++) {
+    if (slice[i].high > slice[i - 1].high && slice[i].high > slice[i + 1].high) {
+      swingHighs.push(i);
     }
-  } else {
-    // Cari Fractal LOW terbaru (anchor): 3-bar fractal
-    for (let i = n - 3; i >= 2; i--) {
-      const c = slice[i];
-      const isSwingLow =
-        c.low < slice[i - 1].low && c.low < slice[i + 1].low;
-      if (!isSwingLow) continue;
+    if (slice[i].low < slice[i - 1].low && slice[i].low < slice[i + 1].low) {
+      swingLows.push(i);
+    }
+  }
 
-      // EMA alignment: EMA50 > EMA200 di candle fractal (trend bullish)
-      const absI = offset + i;
-      const e50 = ema50Full[absI];
-      const e200 = ema200Full[absI];
+  // Validasi impulse wave: bersih, satu arah, tidak sideways
+  function isCleanImpulse(
+    fromIdx: number, toIdx: number,
+    fromPrice: number, toPrice: number,
+    dir: "up" | "down"
+  ): boolean {
+    const span = toIdx - fromIdx;
+    if (span < 5 || span > 20) return false;
+    const range = Math.abs(toPrice - fromPrice);
+    if (range < 8) return false;
+
+    // Tidak ada candle yang melampaui 25% range dari ujung start (impulse bersih)
+    for (let j = fromIdx; j <= toIdx; j++) {
+      if (dir === "up" && slice[j].low < fromPrice - range * 0.25) return false;
+      if (dir === "down" && slice[j].high > fromPrice + range * 0.25) return false;
+    }
+
+    // Trending: rata-rata close paruh kedua lebih ekstrem dari paruh pertama
+    const mid = fromIdx + Math.floor(span / 2);
+    let sumA = 0, cntA = 0, sumB = 0, cntB = 0;
+    for (let j = fromIdx; j <= toIdx; j++) {
+      if (j <= mid) { sumA += slice[j].close; cntA++; }
+      else { sumB += slice[j].close; cntB++; }
+    }
+    if (cntA === 0 || cntB === 0) return false;
+    const avgA = sumA / cntA;
+    const avgB = sumB / cntB;
+    if (dir === "up" && avgB <= avgA) return false;
+    if (dir === "down" && avgB >= avgA) return false;
+
+    return true;
+  }
+
+  if (trend === "Bullish") {
+    // Cari impulse naik terbaru: SwingLow → SwingHigh
+    for (let hi = swingHighs.length - 1; hi >= 0; hi--) {
+      const hIdx = swingHighs[hi];
+      const absHi = offset + hIdx;
+
+      // EMA bullish di candle swing high
+      const e50 = ema50Full[absHi];
+      const e200 = ema200Full[absHi];
       if (isNaN(e50) || isNaN(e200) || e50 <= e200) continue;
 
-      // SwingHigh = HIGH TERBESAR di semua candle sebelum anchor dalam window
-      let swingHigh = -Infinity;
-      for (let j = 0; j < i; j++) {
-        if (slice[j].high > swingHigh) swingHigh = slice[j].high;
-      }
-      if (!isFinite(swingHigh)) continue;
-      if (swingHigh - c.low < 5) continue; // Minimum range 5 pts
+      const swingHighPrice = slice[hIdx].high;
 
-      return { swingHigh, swingLow: c.low, anchorEpoch: c.epoch };
+      // Cari swing low terdekat sebelum swing high ini
+      for (let li = swingLows.length - 1; li >= 0; li--) {
+        const lIdx = swingLows[li];
+        if (lIdx >= hIdx) continue;
+
+        const swingLowPrice = slice[lIdx].low;
+        if (isCleanImpulse(lIdx, hIdx, swingLowPrice, swingHighPrice, "up")) {
+          return { swingHigh: swingHighPrice, swingLow: swingLowPrice, anchorEpoch: slice[hIdx].epoch };
+        }
+      }
+    }
+  } else {
+    // Cari impulse turun terbaru: SwingHigh → SwingLow
+    for (let li = swingLows.length - 1; li >= 0; li--) {
+      const lIdx = swingLows[li];
+      const absLi = offset + lIdx;
+
+      // EMA bearish di candle swing low
+      const e50 = ema50Full[absLi];
+      const e200 = ema200Full[absLi];
+      if (isNaN(e50) || isNaN(e200) || e50 >= e200) continue;
+
+      const swingLowPrice = slice[lIdx].low;
+
+      // Cari swing high terdekat sebelum swing low ini
+      for (let hi = swingHighs.length - 1; hi >= 0; hi--) {
+        const hIdx = swingHighs[hi];
+        if (hIdx >= lIdx) continue;
+
+        const swingHighPrice = slice[hIdx].high;
+        if (isCleanImpulse(hIdx, lIdx, swingHighPrice, swingLowPrice, "down")) {
+          return { swingHigh: swingHighPrice, swingLow: swingLowPrice, anchorEpoch: slice[lIdx].epoch };
+        }
+      }
     }
   }
   return null;

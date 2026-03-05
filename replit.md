@@ -77,16 +77,25 @@ A professional mobile trading analysis app built with Expo (React Native) that p
 - Bullish: draws from fractal low UP to pair high; zone is near the high
 - Levels: 61.8%, 78.6%, -27% extension
 - Tracked via `lastSwingRef` (stores anchorEpoch + trend + pairValue)
-### 5. Entry (ENTRY VALIDATION RULE on M5):
-- Zone check: uses CLOSED M5 candle (not live price) — prevents false blocks
-- SELL: closedM5.high >= zone_lo + bearish close + upper wick >= 1.5x body + body in lower half
-- BUY:  closedM5.low <= zone_hi + bullish close + lower wick >= 1.5x body + body in upper half
-- OR: Engulfing pattern (prev candle engulfed by current, both already closed)
-- Tolerance: zone-reach check (not strict 78.6% exact touch — removed overly strict 0.1% tolerance)
-### 6. Stop Loss: Swing Low (Buy) or Swing High (Sell)
-### 7. Take Profit: -27% Fibonacci extension
+### 5. Entry (ENTRY VALIDATION RULE on M5) — diperlonggar:
+- Zone check DIPERLUAS: 50%–88.6% dari swing range (dari hanya 61.8%–78.6%)
+- SELL: closedM5.high >= 50%-level ATAU harga live sudah di dalam zona + bearish close + upper wick >= 0.8x body
+- BUY:  closedM5.low <= 50%-level ATAU harga live sudah di dalam zona + bullish close + lower wick >= 0.8x body
+- Body center check DIHAPUS (terlalu ketat)
+- OR: Partial Engulfing pattern (75% engulf, bukan full)
+- ATR filter diturunkan: M5_ATR_MIN = 0.3 (dari 1.0)
+### 6. Stop Loss: Swing Low (Buy) atau Swing High (Sell)
+### 7. Take Profit: ATR-adaptif untuk scalping realistis
+- TP distance = clamp(ATR×1.5, min(extDist, ATR×2.5), ATR×3.5)
+- Jika extension terlalu jauh (>3.5 ATR), di-cap
+- Jika terlalu dekat (<1.5 ATR), di-floor
+- Memberikan RR realistis 1.5–3.5 untuk scalping M5
 ### 8. Position Sizing: Lot = (1% × Balance) / SL distance
-### 9. Filters: Min SL distance (0.1 × ATR14), max 1 active signal per fractal anchor
+### 9. Filters: Min SL distance (0.1 × ATR14), cooldown 30 menit per fractal anchor (bukan permanent block)
+
+## URL Fix (APK)
+- `EXPO_PUBLIC_DOMAIN` dari env var mengandung `:5000` tapi Replit proxy HTTPS bekerja di port 443
+- `getBackendUrl()` sekarang strip `:5000` sehingga URL backend correct di APK
 
 ### Active Signal Tracking (activeSignal vs currentSignal)
 - `currentSignal`: fired when conditions met — becomes null after single-position rule marks anchor
@@ -198,28 +207,38 @@ Atau cek di: https://expo.dev/accounts/[username]/projects/fibotrader/builds
 ## AI Integration (LIBARTIN AI)
 
 ### File
-- `server/aiService.ts` — AI service utama
-- `components/AIAdvisor.tsx` — Frontend AI chat component
+- `server/aiService.ts` — AI service utama (non-streaming + word-by-word streaming)
+- `app/(tabs)/ai.tsx` — Tab baru full-screen AI chat dengan streaming UI
 - `server/routes.ts` — Endpoint `/api/ai/*`
 
 ### Fitur
+- **Tab AI Chat baru** — tab terpisah, full-screen, tidak tertutup keyboard
+- **Streaming response** — AI "berpikir" (TypingDots animasi), lalu teks muncul kata per kata
 - Otomatis generate rekomendasi saat sinyal BUY/SELL terdeteksi (tanpa request user)
-- Otomatis generate komentar saat TP tercapai (WIN) atau SL tercapai (LOSS)
+- Otomatis generate komentar saat TP/SL tercapai
 - User bisa chat bebas tanya kondisi pasar, analisis teknikal, dll
 - Ingatan konteks percakapan (max 3 exchange terakhir)
 - Respons bersih tanpa markdown — semua karakter format dihapus oleh stripMarkdown()
 - System prompt ketat mencegah halusinasi (hanya bicara berdasarkan data aktual)
 
+### Streaming Architecture
+- Server: dapatkan full response dari Pollinations (non-streaming, bersih dari reasoning_content)
+- Server: stream kata-per-kata via SSE (`/api/ai/stream`) dengan interval dinamis
+- Client: tampilkan TypingDots saat menunggu, lalu teks muncul kata-per-kata (typewriter effect)
+- Fix bug: `req.on("close")` diganti `res.on("close")` — body parsing POST request tidak lagi menutup SSE
+
 ### API Provider
 - Pollinations AI: `https://text.pollinations.ai/v1/chat/completions` (model openai, gratis, tanpa API key)
 
 ### Endpoints
-- `GET /api/ai/messages` — ambil pesan AI terbaru (dipolling frontend setiap 6 detik)
-- `POST /api/ai/chat` — user kirim pertanyaan ke AI
+- `GET /api/ai/messages` — ambil pesan AI terbaru
+- `POST /api/ai/chat` — user kirim pertanyaan ke AI (non-streaming)
+- `POST /api/ai/stream` — user kirim pertanyaan ke AI dengan SSE streaming
 - `POST /api/ai/outcome` — lapor TP/SL outcome agar AI generate komentar
 
-### Proxy Fix
-`server/index.ts` diperbaiki: proxy Expo web (`/`) tidak lagi mengintersep request `/api`
+### Tab Navigation
+- 4 tab: Dashboard | Signals | AI Chat | Settings
+- AI Chat: full-screen, KeyboardAvoidingView, bubble chat UI
 
 ## Workflows
 - **Start Backend**: `npm run server:dev` (port 5000)

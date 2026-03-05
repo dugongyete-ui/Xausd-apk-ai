@@ -24,26 +24,25 @@ interface ConversationTurn {
 }
 
 // ─── Strip Markdown ────────────────────────────────────────────────────────────
-// Hapus semua karakter markdown: bintang, garis, hashtag, backtick, dll
 function stripMarkdown(text: string): string {
   return text
-    .replace(/#{1,6}\s+/g, "")           // # Heading
-    .replace(/\*\*\*(.+?)\*\*\*/g, "$1") // ***bold italic***
-    .replace(/\*\*(.+?)\*\*/g, "$1")     // **bold**
-    .replace(/\*(.+?)\*/g, "$1")         // *italic*
-    .replace(/__(.+?)__/g, "$1")         // __bold__
-    .replace(/_(.+?)_/g, "$1")           // _italic_
-    .replace(/~~(.+?)~~/g, "$1")         // ~~strikethrough~~
-    .replace(/`{3}[\s\S]*?`{3}/g, "")   // ```code block```
-    .replace(/`(.+?)`/g, "$1")           // `inline code`
-    .replace(/\[(.+?)\]\(.+?\)/g, "$1") // [text](url)
-    .replace(/!\[.*?\]\(.+?\)/g, "")    // ![image](url)
-    .replace(/^[-*+]\s+/gm, "")         // - bullet or * bullet
-    .replace(/^\d+\.\s+/gm, "")         // 1. numbered list
-    .replace(/^>{1,}\s*/gm, "")         // > blockquote
-    .replace(/^-{3,}$/gm, "")           // --- horizontal rule
-    .replace(/^\*{3,}$/gm, "")          // *** horizontal rule
-    .replace(/\n{3,}/g, "\n\n")         // multiple blank lines → max 2
+    .replace(/#{1,6}\s+/g, "")
+    .replace(/\*\*\*(.+?)\*\*\*/g, "$1")
+    .replace(/\*\*(.+?)\*\*/g, "$1")
+    .replace(/\*(.+?)\*/g, "$1")
+    .replace(/__(.+?)__/g, "$1")
+    .replace(/_(.+?)_/g, "$1")
+    .replace(/~~(.+?)~~/g, "$1")
+    .replace(/`{3}[\s\S]*?`{3}/g, "")
+    .replace(/`(.+?)`/g, "$1")
+    .replace(/\[(.+?)\]\(.+?\)/g, "$1")
+    .replace(/!\[.*?\]\(.+?\)/g, "")
+    .replace(/^[-*+]\s+/gm, "")
+    .replace(/^\d+\.\s+/gm, "")
+    .replace(/^>{1,}\s*/gm, "")
+    .replace(/^-{3,}$/gm, "")
+    .replace(/^\*{3,}$/gm, "")
+    .replace(/\n{3,}/g, "\n\n")
     .trim();
 }
 
@@ -73,7 +72,7 @@ Kamu boleh mengingat dan merujuk percakapan sebelumnya dalam sesi ini.
 FORMAT RESPONS WAJIB:
 Tulis dalam teks biasa saja. Jangan gunakan markdown, jangan pakai bintang, jangan pakai tanda pagar, jangan pakai garis bawah, jangan pakai backtick, jangan pakai dash sebagai bullet. Gunakan kalimat biasa yang mengalir. Boleh gunakan angka 1, 2, 3 jika perlu urutan. Maksimal 150 kata untuk rekomendasi sinyal.`;
 
-// ─── Call AI API ───────────────────────────────────────────────────────────────
+// ─── Call AI API (non-streaming) ───────────────────────────────────────────────
 async function callPollinationsAI(
   messages: Array<{ role: string; content: string }>
 ): Promise<string> {
@@ -120,6 +119,41 @@ async function callPollinationsAI(
     req.write(payload);
     req.end();
   });
+}
+
+// ─── Server-side word streaming (simulate streaming from full response) ──────────
+// Pollinations reasoning models output internal thinking (reasoning_content) before
+// actual content. To avoid streaming raw reasoning, we get the full response first
+// and then stream it word-by-word for a clean typewriter experience.
+function streamWordByWord(
+  text: string,
+  onChunk: (chunk: string) => void,
+  onDone: () => void
+): void {
+  // Split into words+spaces, stream 2-3 chars at a time for natural feel
+  const tokens: string[] = [];
+  const re = /(\S+\s*)/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) tokens.push(m[1]);
+
+  if (tokens.length === 0) {
+    onDone();
+    return;
+  }
+
+  let i = 0;
+  // Dynamic interval: faster for short responses, target ~30-40 words/sec
+  const ms = Math.max(25, Math.min(80, Math.floor(2000 / tokens.length)));
+
+  const iv = setInterval(() => {
+    if (i < tokens.length) {
+      onChunk(tokens[i]);
+      i++;
+    } else {
+      clearInterval(iv);
+      onDone();
+    }
+  }, ms);
 }
 
 // ─── Market Context Builder ───────────────────────────────────────────────────
@@ -315,45 +349,28 @@ class AIService {
     console.log(`[AIService] Outcome commentary done`);
   }
 
-  // ─── User Chat (with conversation memory) ─────────────────────────────────
-  // Desain percakapan:
-  // conversationHistory hanya menyimpan pertanyaan PENDEK user dan jawaban AI.
-  // Saat membangun pesan untuk API:
-  //   [0] user: fresh market context + pertanyaan pertama dari history
-  //   [1] assistant: jawaban pertama
-  //   [2] user: pertanyaan kedua (pendek)
-  //   [3] assistant: jawaban kedua
-  //   ... dan seterusnya ...
-  //   [N] user: pertanyaan baru (current)
-  // Dengan cara ini market context hanya muncul sekali (di depan),
-  // payload tidak membengkak, dan AI tetap bisa mengingat konteks percakapan.
+  // ─── User Chat (non-streaming, for /api/ai/chat) ───────────────────────────
   async chat(
     userMessage: string,
     snapshot: MarketStateSnapshot
   ): Promise<string> {
     const marketCtx = buildMarketContext(snapshot);
     const messages: Array<{ role: string; content: string }> = [];
-
-    // Max 3 pasang exchange terakhir (6 turns) agar payload ringan dan API cepat
     const recentHistory = this.conversationHistory.slice(-6);
 
     if (recentHistory.length === 0) {
-      // Pertama: market context + pertanyaan langsung
       messages.push({
         role: "user",
         content: `${marketCtx}\n\nPertanyaan: ${userMessage}`,
       });
     } else {
-      // Ada history: letakkan market context di awal pesan user pertama dari history
       messages.push({
         role: "user",
         content: `${marketCtx}\n\nPertanyaan sebelumnya: ${recentHistory[0].content}`,
       });
-      // Sisa history mulai dari index 1
       for (let i = 1; i < recentHistory.length; i++) {
         messages.push({ role: recentHistory[i].role, content: recentHistory[i].content });
       }
-      // Pertanyaan baru
       messages.push({ role: "user", content: userMessage });
     }
 
@@ -365,23 +382,59 @@ class AIService {
 
     const clean = stripMarkdown(response);
 
-    // Simpan hanya teks pendek (bukan market context) ke history
     this.addToHistory("user", userMessage);
     this.addToHistory("assistant", clean);
 
-    this.addDisplayMessage({
-      role: "user",
-      content: userMessage,
-      type: "user_chat",
-    });
-
-    this.addDisplayMessage({
-      role: "assistant",
-      content: clean,
-      type: "user_chat",
-    });
+    this.addDisplayMessage({ role: "user", content: userMessage, type: "user_chat" });
+    this.addDisplayMessage({ role: "assistant", content: clean, type: "user_chat" });
 
     return clean;
+  }
+
+  // ─── User Chat Streaming ───────────────────────────────────────────────────
+  // Strategy: get full response from Pollinations (non-streaming, avoids reasoning_content noise),
+  // then stream the clean text word-by-word to the client for a typewriter effect.
+  chatStream(
+    userMessage: string,
+    snapshot: MarketStateSnapshot,
+    onChunk: (chunk: string) => void,
+    onDone: (fullResponse: string) => void,
+    onError: (err: string) => void
+  ): void {
+    const marketCtx = buildMarketContext(snapshot);
+    const messages: Array<{ role: string; content: string }> = [];
+    const recentHistory = this.conversationHistory.slice(-6);
+
+    if (recentHistory.length === 0) {
+      messages.push({
+        role: "user",
+        content: `${marketCtx}\n\nPertanyaan: ${userMessage}`,
+      });
+    } else {
+      messages.push({
+        role: "user",
+        content: `${marketCtx}\n\nPertanyaan sebelumnya: ${recentHistory[0].content}`,
+      });
+      for (let i = 1; i < recentHistory.length; i++) {
+        messages.push({ role: recentHistory[i].role, content: recentHistory[i].content });
+      }
+      messages.push({ role: "user", content: userMessage });
+    }
+
+    // Get full response first (clean, no reasoning_content noise)
+    callPollinationsAI(messages).then((fullResponse) => {
+      const clean = fullResponse.trim() || "Maaf, AI tidak dapat merespons saat ini.";
+
+      this.addToHistory("user", userMessage);
+      this.addToHistory("assistant", clean);
+      this.addDisplayMessage({ role: "user", content: userMessage, type: "user_chat" });
+      this.addDisplayMessage({ role: "assistant", content: clean, type: "user_chat" });
+
+      // Stream word by word to give typewriter feel
+      streamWordByWord(clean, onChunk, () => onDone(clean));
+    }).catch((err: Error) => {
+      onError(err.message || "AI error");
+    });
   }
 
   getMessages(limit = 20): AIMessage[] {

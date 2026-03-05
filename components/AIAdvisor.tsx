@@ -28,12 +28,18 @@ interface AIMessage {
   };
 }
 
-const BACKEND_URL = (() => {
+function getBackendUrl(): string {
   if (typeof process !== "undefined" && process.env.EXPO_PUBLIC_DOMAIN) {
-    return `https://${process.env.EXPO_PUBLIC_DOMAIN}`;
+    const domain = process.env.EXPO_PUBLIC_DOMAIN;
+    if (domain.startsWith("http")) return domain;
+    // Replit proxy: strip ":5000" port karena HTTPS sudah di-proxy ke port 443
+    const cleanDomain = domain.replace(/:5000$/, "");
+    return `https://${cleanDomain}`;
   }
   return "";
-})();
+}
+
+const BACKEND_URL = getBackendUrl();
 
 const POLL_INTERVAL = 6000;
 
@@ -155,7 +161,21 @@ export function AIAdvisor() {
 
   const sendMessage = useCallback(async () => {
     const msg = inputText.trim();
-    if (!msg || sending || !BACKEND_URL) return;
+    if (!msg || sending) return;
+
+    if (!BACKEND_URL) {
+      setMessages((prev) => [
+        {
+          id: `err_${Date.now()}`,
+          role: "assistant" as const,
+          content: "Server tidak terhubung. Pastikan aplikasi terhubung ke internet dan server berjalan.",
+          type: "system" as const,
+          timestamp: new Date().toUTCString(),
+        },
+        ...prev,
+      ]);
+      return;
+    }
 
     setSending(true);
     setInputText("");
@@ -168,25 +188,62 @@ export function AIAdvisor() {
       timestamp: new Date().toUTCString(),
     };
     setMessages((prev) => [optimisticMsg, ...prev]);
+    setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 100);
 
     try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 40000);
+
       const res = await fetch(`${BACKEND_URL}/api/ai/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ message: msg }),
+        signal: controller.signal,
       });
+      clearTimeout(timeoutId);
+
       if (res.ok) {
-        const data = await res.json() as { messages: AIMessage[] };
-        setMessages(data.messages ?? []);
+        const data = await res.json() as { messages: AIMessage[]; response?: string };
+        if (data.messages && data.messages.length > 0) {
+          setMessages(data.messages);
+        } else if (data.response) {
+          const aiMsg: AIMessage = {
+            id: `ai_${Date.now()}`,
+            role: "assistant",
+            content: data.response,
+            type: "user_chat",
+            timestamp: new Date().toUTCString(),
+          };
+          setMessages((prev) => [aiMsg, ...prev]);
+        }
         setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 100);
+      } else {
+        let errText = "AI tidak dapat merespons sekarang.";
+        try {
+          const errData = await res.json() as { error?: string };
+          if (errData.error) errText = errData.error;
+        } catch {}
+        setMessages((prev) => [
+          {
+            id: `err_${Date.now()}`,
+            role: "assistant" as const,
+            content: errText,
+            type: "system" as const,
+            timestamp: new Date().toUTCString(),
+          },
+          ...prev,
+        ]);
       }
-    } catch {
+    } catch (e: unknown) {
+      const isAborted = e instanceof Error && e.name === "AbortError";
       setMessages((prev) => [
         {
           id: `err_${Date.now()}`,
-          role: "assistant",
-          content: "Maaf, koneksi ke AI bermasalah. Pastikan server berjalan dan coba lagi.",
-          type: "system",
+          role: "assistant" as const,
+          content: isAborted
+            ? "Permintaan AI timeout (>40 detik). Coba lagi dengan pertanyaan yang lebih singkat."
+            : "Koneksi ke server bermasalah. Periksa koneksi internet dan coba lagi.",
+          type: "system" as const,
           timestamp: new Date().toUTCString(),
         },
         ...prev,

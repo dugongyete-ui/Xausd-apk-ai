@@ -18,6 +18,10 @@ function NativeTabLayout() {
         <Icon sf={{ default: "bell", selected: "bell.fill" }} />
         <Label>Signals</Label>
       </NativeTabs.Trigger>
+      <NativeTabs.Trigger name="ai">
+        <Icon sf={{ default: "sparkles", selected: "sparkles" }} />
+        <Label>AI Chat</Label>
+      </NativeTabs.Trigger>
       <NativeTabs.Trigger name="settings">
         <Icon sf={{ default: "gearshape", selected: "gearshape.fill" }} />
         <Label>Settings</Label>
@@ -75,6 +79,15 @@ function ClassicTabLayout() {
           title: "Signals",
           tabBarIcon: ({ color, size }) => (
             <Ionicons name="notifications" size={size} color={color} />
+          ),
+        }}
+      />
+      <Tabs.Screen
+        name="ai"
+        options={{
+          title: "AI Chat",
+          tabBarIcon: ({ color, size }) => (
+            <Ionicons name="sparkles" size={size} color={color} />
           ),
         }}
       />

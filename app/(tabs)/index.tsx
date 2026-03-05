@@ -12,7 +12,6 @@ import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import C from "@/constants/colors";
 import { useTrading, TrendState } from "@/contexts/TradingContext";
 import { FibChart } from "@/components/FibChart";
-import { AIAdvisor } from "@/components/AIAdvisor";
 
 // ─── Live Clock ───────────────────────────────────────────────────────────────
 function LiveClock() {
@@ -582,10 +581,6 @@ export default function DashboardScreen() {
         <FibLevelsCard />
         <SignalCard />
 
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>AI ADVISOR</Text>
-          <AIAdvisor />
-        </View>
       </ScrollView>
     </View>
   );

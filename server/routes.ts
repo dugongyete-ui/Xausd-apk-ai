@@ -80,6 +80,67 @@ export async function registerRoutes(app: Express): Promise<Server> {
     res.json({ response, messages: aiService.getMessages(20) });
   });
 
+  // POST /api/ai/stream — Streaming chat via Server-Sent Events
+  app.post("/api/ai/stream", (req: Request, res: Response) => {
+    const { message } = req.body as { message?: string };
+    if (!message || message.trim().length === 0) {
+      res.status(400).json({ error: "Message required" });
+      return;
+    }
+    if (message.trim().length > 500) {
+      res.status(400).json({ error: "Pesan terlalu panjang (maks 500 karakter)" });
+      return;
+    }
+
+    res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+    res.setHeader("Cache-Control", "no-cache, no-transform");
+    res.setHeader("Connection", "keep-alive");
+    res.setHeader("X-Accel-Buffering", "no");
+    res.flushHeaders();
+
+    const snapshot = derivService.getSnapshot();
+
+    const flush = () => {
+      if (typeof (res as unknown as { flush?: () => void }).flush === "function") {
+        (res as unknown as { flush: () => void }).flush();
+      }
+    };
+
+    let streamDone = false;
+
+    aiService.chatStream(
+      message.trim(),
+      snapshot,
+      (chunk: string) => {
+        if (!streamDone) {
+          res.write(`data: ${JSON.stringify({ chunk })}\n\n`);
+          flush();
+        }
+      },
+      (_fullResponse: string) => {
+        if (!streamDone) {
+          streamDone = true;
+          res.write(`data: [DONE]\n\n`);
+          flush();
+          res.end();
+        }
+      },
+      (err: string) => {
+        console.error("[Routes] Stream error:", err);
+        if (!streamDone) {
+          streamDone = true;
+          res.write(`data: ${JSON.stringify({ error: err })}\n\n`);
+          flush();
+          res.end();
+        }
+      }
+    );
+
+    res.on("close", () => {
+      streamDone = true;
+    });
+  });
+
   // POST /api/ai/outcome — Frontend reports TP/SL outcome, AI generates commentary
   app.post("/api/ai/outcome", (req: Request, res: Response) => {
     const { signalId, outcome } = req.body as { signalId?: string; outcome?: "win" | "loss" };

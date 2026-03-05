@@ -189,8 +189,7 @@ function findSwings(
   candles: Candle[],
   trend: "Bullish" | "Bearish"
 ): { swingHigh: number; swingLow: number; anchorEpoch: number } | null {
-  const LOOKBACK = Math.min(candles.length, 100);
-  const PAIR_LOOKBACK = 25; // max candles before anchor to search for pair extreme
+  const LOOKBACK = Math.min(candles.length, 150); // Diperluas: lebih banyak candle untuk swing detection
   const slice = candles.slice(-LOOKBACK);
   const n = slice.length;
   if (n < 10) return null;
@@ -201,58 +200,53 @@ function findSwings(
   const offset = candles.length - LOOKBACK;
 
   if (trend === "Bearish") {
-    // Cari Fractal HIGH terbaru (anchor): loop dari n-4 ke belakang
-    // n-4 karena butuh 2 right neighbors yang sudah closed (n-3, n-2)
-    // slice[n-1] adalah live candle, tidak disentuh
-    for (let i = n - 4; i >= 4; i--) {
+    // Cari Fractal HIGH terbaru (anchor): 3-bar fractal (1 neighbor kiri & kanan)
+    // n-2: minimal 2 candle closed setelah fractal (lebih cepat dari 4-bar)
+    for (let i = n - 3; i >= 2; i--) {
       const c = slice[i];
+      // 3-bar fractal: lebih responsif
       const isSwingHigh =
-        c.high > slice[i - 1].high && c.high > slice[i - 2].high &&
-        c.high > slice[i + 1].high && c.high > slice[i + 2].high;
+        c.high > slice[i - 1].high && c.high > slice[i + 1].high;
       if (!isSwingHigh) continue;
 
-      // EMA alignment: EMA50 < EMA200 di candle fractal
+      // EMA alignment: EMA50 < EMA200 di candle fractal (trend bearish)
       const absI = offset + i;
       const e50 = ema50Full[absI];
       const e200 = ema200Full[absI];
       if (isNaN(e50) || isNaN(e200) || e50 >= e200) continue;
 
-      // SwingLow = LOW TERKECIL (absolute minimum) dalam PAIR_LOOKBACK candle sebelum anchor.
-      // Absolute extreme supaya Fibonacci merentang full range dari impulse move.
-      const searchStart = Math.max(0, i - PAIR_LOOKBACK);
+      // SwingLow = LOW TERKECIL di semua candle sebelum anchor dalam window
+      // Full-window search: tidak dibatasi PAIR_LOOKBACK, ambil absolute minimum
       let swingLow = Infinity;
-      for (let j = searchStart; j < i; j++) {
+      for (let j = 0; j < i; j++) {
         if (slice[j].low < swingLow) swingLow = slice[j].low;
       }
       if (!isFinite(swingLow)) continue;
-      if (c.high - swingLow < 5) continue;
+      if (c.high - swingLow < 5) continue; // Minimum range 5 pts
 
       return { swingHigh: c.high, swingLow, anchorEpoch: c.epoch };
     }
   } else {
-    // Cari Fractal LOW terbaru (anchor)
-    for (let i = n - 4; i >= 4; i--) {
+    // Cari Fractal LOW terbaru (anchor): 3-bar fractal
+    for (let i = n - 3; i >= 2; i--) {
       const c = slice[i];
       const isSwingLow =
-        c.low < slice[i - 1].low && c.low < slice[i - 2].low &&
-        c.low < slice[i + 1].low && c.low < slice[i + 2].low;
+        c.low < slice[i - 1].low && c.low < slice[i + 1].low;
       if (!isSwingLow) continue;
 
-      // EMA alignment: EMA50 > EMA200 di candle fractal
+      // EMA alignment: EMA50 > EMA200 di candle fractal (trend bullish)
       const absI = offset + i;
       const e50 = ema50Full[absI];
       const e200 = ema200Full[absI];
       if (isNaN(e50) || isNaN(e200) || e50 <= e200) continue;
 
-      // SwingHigh = HIGH TERBESAR (absolute maximum) dalam PAIR_LOOKBACK candle sebelum anchor.
-      // Absolute extreme supaya Fibonacci merentang full range dari impulse move.
-      const searchStart = Math.max(0, i - PAIR_LOOKBACK);
+      // SwingHigh = HIGH TERBESAR di semua candle sebelum anchor dalam window
       let swingHigh = -Infinity;
-      for (let j = searchStart; j < i; j++) {
+      for (let j = 0; j < i; j++) {
         if (slice[j].high > swingHigh) swingHigh = slice[j].high;
       }
       if (!isFinite(swingHigh)) continue;
-      if (swingHigh - c.low < 5) continue;
+      if (swingHigh - c.low < 5) continue; // Minimum range 5 pts
 
       return { swingHigh, swingLow: c.low, anchorEpoch: c.epoch };
     }
@@ -278,37 +272,41 @@ function calcFib(swingHigh: number, swingLow: number, trend: "Bullish" | "Bearis
   };
 }
 
-// Rejection Pin Bar — 4-condition filter:
+// Rejection Pin Bar — kondisi diperlonggar untuk lebih sering terpenuhi:
 // ① Candle arah sesuai trend (close vs open)
-// ② Wick dominan ≥ 1.5× body
-// ③ Body di sisi yang benar dari midpoint candle
-// ④ Wick menyentuh/masuk zona Fibonacci (lo–hi), bukan exact 78.6%
+// ② Wick dominan ≥ 0.8× body (dari 1.5× — lebih permisif)
+// ③ Wick menyentuh/masuk zona DIPERLUAS (50%–88.6%)
+// Body center check DIHAPUS — terlalu ketat
 // Hanya candle CLOSED yang dievaluasi (dijamin dari caller)
-const M5_ATR_MIN = 1.0;
+const M5_ATR_MIN = 0.3; // Turun dari 1.0 → lebih permisif
 
 function checkRejection(candle: Candle, trend: "Bullish" | "Bearish", fib: FibLevels): boolean {
   const body = Math.abs(candle.close - candle.open);
   if (body === 0) return false;
-  const midpoint = (candle.high + candle.low) / 2;
-  const lo = Math.min(fib.level618, fib.level786);
-  const hi = Math.max(fib.level618, fib.level786);
+
+  // Zona diperluas: gunakan 50%–88.6% bukan hanya 61.8%–78.6%
+  const range = Math.abs(fib.swingHigh - fib.swingLow);
+  let lo: number, hi: number;
+  if (trend === "Bearish") {
+    lo = fib.swingLow + range * 0.50;   // 50%
+    hi = fib.swingLow + range * 0.886;  // 88.6%
+  } else {
+    lo = fib.swingHigh - range * 0.886; // 88.6% retracement
+    hi = fib.swingHigh - range * 0.50;  // 50% retracement
+  }
 
   if (trend === "Bullish") {
     if (candle.close <= candle.open) return false;
     const lowerWick = Math.min(candle.open, candle.close) - candle.low;
-    if (lowerWick < body * 1.5) return false;
-    const bodyCenter = (candle.open + candle.close) / 2;
-    if (bodyCenter <= midpoint) return false;
-    // Lower wick harus mencapai zona (candle low <= hi)
+    if (lowerWick < body * 0.8) return false;
+    // Lower wick harus mencapai zona diperluas
     if (candle.low > hi) return false;
     return true;
   }
   if (candle.close >= candle.open) return false;
   const upperWick = candle.high - Math.max(candle.open, candle.close);
-  if (upperWick < body * 1.5) return false;
-  const bodyCenter = (candle.open + candle.close) / 2;
-  if (bodyCenter >= midpoint) return false;
-  // Upper wick harus mencapai zona (candle high >= lo)
+  if (upperWick < body * 0.8) return false;
+  // Upper wick harus mencapai zona diperluas
   if (candle.high < lo) return false;
   return true;
 }
@@ -317,12 +315,20 @@ function checkEngulfing(prev: Candle, curr: Candle, trend: "Bullish" | "Bearish"
   const prevBody = Math.abs(prev.close - prev.open);
   const currBody = Math.abs(curr.close - curr.open);
   if (prevBody === 0 || currBody === 0) return false;
+  // Diperlonggar: cukup curr body >= 75% dari prev body (dari full engulf)
   if (trend === "Bullish") {
-    return prev.close < prev.open && curr.close > curr.open &&
-      curr.close > prev.open && curr.open < prev.close;
+    const prevBear = prev.close < prev.open;
+    const currBull = curr.close > curr.open;
+    if (!prevBear || !currBull) return false;
+    // Partial engulfing: curr close melebihi 75% prev body
+    const engulfTarget = prev.close + (prev.open - prev.close) * 0.75;
+    return curr.close >= engulfTarget && curr.open <= prev.close + prevBody * 0.25;
   }
-  return prev.close > prev.open && curr.close < curr.open &&
-    curr.close < prev.open && curr.open > prev.close;
+  const prevBull = prev.close > prev.open;
+  const currBear = curr.close < curr.open;
+  if (!prevBull || !currBear) return false;
+  const engulfTarget = prev.close - (prev.close - prev.open) * 0.75;
+  return curr.close <= engulfTarget && curr.open >= prev.close - prevBody * 0.25;
 }
 
 function getTrend(m15Candles: Candle[]): TrendState {
@@ -379,8 +385,9 @@ class DerivService {
   private lastSwing: { anchorEpoch: number; trend: string; pairValue: number } | null = null;
   private fibLevels: FibLevels | null = null;
   private currentSignal: TradingSignal | null = null;
-  // Single position rule: satu signal per fractal anchor
+  // Single position rule: cooldown 30 menit per anchor (bukan permanent block)
   private lastSignaledAnchorEpoch: number | null = null;
+  private lastSignaledTimeMs: number = 0;
   private signalHistory: TradingSignal[] = [];
   private savedSignalKeys: Set<string> = new Set();
 
@@ -612,8 +619,11 @@ class DerivService {
       return;
     }
 
-    // ⑤ Single position rule: satu signal per fractal anchor
-    if (this.lastSignaledAnchorEpoch === anchorEpoch) {
+    // Single position rule: cooldown 30 menit per anchor (bukan permanent block)
+    // Jika anchor sama & belum 30 menit, blok. Jika anchor baru, izinkan langsung.
+    const SIGNAL_COOLDOWN_MS = 30 * 60 * 1000; // 30 menit
+    if (this.lastSignaledAnchorEpoch === anchorEpoch &&
+        Date.now() - this.lastSignaledTimeMs < SIGNAL_COOLDOWN_MS) {
       this.currentSignal = null;
       return;
     }
@@ -625,25 +635,34 @@ class DerivService {
     }
 
     const fib = this.fibLevels;
-    const lo = Math.min(fib.level618, fib.level786);
-    const hi = Math.max(fib.level618, fib.level786);
+    // Zona diperluas untuk zone check: 50%–88.6% dari swing range
+    const range = Math.abs(fib.swingHigh - fib.swingLow);
+    let lo: number, hi: number;
+    if (trend === "Bearish") {
+      lo = fib.swingLow + range * 0.50;
+      hi = fib.swingLow + range * 0.886;
+    } else {
+      lo = fib.swingHigh - range * 0.886;
+      hi = fib.swingHigh - range * 0.50;
+    }
 
     // ① Gunakan candle CLOSED: n-2 (closed terakhir), n-3 (sebelumnya)
     const closedM5 = this.m5Candles[this.m5Candles.length - 2];
     const prevM5   = this.m5Candles[this.m5Candles.length - 3];
 
-    // ② Zone check: pakai candle CLOSED (bukan harga live)
-    // Bearish SELL: wick atas closedM5 harus masuk ke zona
-    // Bullish BUY : wick bawah closedM5 harus masuk ke zona
+    // ② Zone check: candle CLOSED menyentuh zona diperluas (50%–88.6%)
+    // Bearish SELL: high candle harus mencapai atau melewati 50% dari bawah
+    // Bullish BUY : low candle harus mencapai atau melewati 50% dari atas
+    // Juga izinkan: jika harga live (currentPrice) sudah di dalam zona
     const candleTouchesZone = trend === "Bearish"
-      ? closedM5.high >= lo
-      : closedM5.low <= hi;
+      ? closedM5.high >= lo || (this.currentPrice >= lo && this.currentPrice <= hi)
+      : closedM5.low <= hi || (this.currentPrice >= lo && this.currentPrice <= hi);
     if (!candleTouchesZone) {
       this.currentSignal = null;
       return;
     }
 
-    // ④ Volatility filter: ATR M5 harus cukup besar
+    // ④ Volatility filter: ATR M5 harus cukup besar (sangat diperlonggar)
     const m5ATR = calcATR(this.m5Candles.slice(0, -1), ATR_PERIOD);
     if (m5ATR < M5_ATR_MIN) {
       this.currentSignal = null;
@@ -660,12 +679,22 @@ class DerivService {
 
     const confirmationType = isEngulfing ? "engulfing" : "rejection";
     const sl = trend === "Bullish" ? fib.swingLow : fib.swingHigh;
-    const tp = fib.extensionNeg27;
     const slDistance = Math.abs(this.currentPrice - sl);
     if (slDistance < atr * 0.1) {
       this.currentSignal = null;
       return;
     }
+
+    // TP realistis M5 scalping: gunakan M5 ATR (bukan M15 ATR yang terlalu besar)
+    // M5 ATR untuk XAUUSD biasanya 2-6 poin → TP target 3-18 poin
+    // - Floor: m5ATR × 1.5 (minimum TP yang layak)
+    // - Cap: m5ATR × 3.0 (tidak terlalu jauh untuk scalping)
+    // - Referensi: Fibonacci extension dipakai jika dalam range, tapi di-cap dengan M5 ATR
+    const extDist = Math.abs(fib.extensionNeg27 - this.currentPrice);
+    const atpDist = Math.max(m5ATR * 1.5, Math.min(extDist, m5ATR * 3.0));
+    const tp = trend === "Bearish"
+      ? this.currentPrice - atpDist
+      : this.currentPrice + atpDist;
 
     const tpDistance = Math.abs(tp - this.currentPrice);
     const riskReward = Math.round((tpDistance / slDistance) * 100) / 100;
@@ -692,8 +721,9 @@ class DerivService {
 
     if (!this.savedSignalKeys.has(sigId)) {
       this.savedSignalKeys.add(sigId);
-      // ⑤ Tandai anchor ini sudah dipakai — blok signal baru untuk anchor yang sama
+      // Tandai anchor & waktu — cooldown 30 menit untuk anchor yang sama
       this.lastSignaledAnchorEpoch = anchorEpoch;
+      this.lastSignaledTimeMs = Date.now();
       this.signalHistory.unshift(signal);
       if (this.signalHistory.length > 100) this.signalHistory.pop();
       console.log(`[DerivService] NEW SIGNAL: ${trend} @ ${this.currentPrice}, RR: ${riskReward}`);

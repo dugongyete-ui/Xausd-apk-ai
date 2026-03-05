@@ -143,21 +143,19 @@ function callPollinationsAI(
     req.on("error", async (e) => {
       console.error("[AIService] Request error:", e.message);
       if (attempt === 0) {
-        await new Promise((r) => setTimeout(r, 3000));
+        await new Promise((r) => setTimeout(r, 2000));
         resolve(callPollinationsAI(messages, 1));
       } else {
         resolve("");
       }
     });
 
-    req.setTimeout(60000, () => {
-      console.error("[AIService] Request timeout (60s)");
+    // 35s per attempt — keeps total (retry included) well within frontend's 80s timeout
+    req.setTimeout(35000, () => {
+      console.error("[AIService] Request timeout (35s)");
       req.destroy();
-      if (attempt === 0) {
-        callPollinationsAI(messages, 1).then(resolve);
-      } else {
-        resolve("");
-      }
+      // Do NOT retry on timeout — fail fast so frontend doesn't abort first
+      resolve("");
     });
 
     req.write(payload);

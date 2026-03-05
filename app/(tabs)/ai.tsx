@@ -399,7 +399,7 @@ export default function AIScreen() {
 
     try {
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 45000);
+      const timeoutId = setTimeout(() => controller.abort(), 80000);
 
       const res = await fetch(`${BACKEND_URL}/api/ai/chat`, {
         method: "POST",
@@ -426,7 +426,7 @@ export default function AIScreen() {
     } catch (err: unknown) {
       const isAborted = err instanceof Error && err.name === "AbortError";
       const errMsg = isAborted
-        ? "AI timeout (>45 detik). Coba lagi dengan pertanyaan singkat."
+        ? "AI timeout (>80 detik). Coba lagi sebentar."
         : err instanceof Error ? err.message : "Terjadi kesalahan koneksi.";
       setMessages((prev) =>
         prev.map((m) =>

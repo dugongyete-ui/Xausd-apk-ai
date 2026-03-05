@@ -259,9 +259,11 @@ function setupErrorHandler(app: express.Application) {
   setupBodyParsing(app);
   setupRequestLogging(app);
 
-  await configureExpoAndLanding(app);
-
+  // Register API routes FIRST — before any proxy/static middleware
+  // This guarantees /api/* is always handled by Express, never by Expo proxy
   const server = await registerRoutes(app);
+
+  await configureExpoAndLanding(app);
 
   setupErrorHandler(app);
 

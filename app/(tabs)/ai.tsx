@@ -388,7 +388,20 @@ export default function AIScreen() {
         return;
       }
 
-      const sendData = await sendRes.json() as { requestId?: string; queued?: boolean };
+      // Parse JSON safely — if backend returns HTML (e.g. during restart), handle gracefully
+      let sendData: { requestId?: string; queued?: boolean } = {};
+      try {
+        const contentType = sendRes.headers.get("content-type") ?? "";
+        if (!contentType.includes("application/json")) {
+          showError("Server sedang restart, coba lagi dalam beberapa detik.");
+          return;
+        }
+        sendData = await sendRes.json() as { requestId?: string; queued?: boolean };
+      } catch {
+        showError("Server sedang restart, coba lagi dalam beberapa detik.");
+        return;
+      }
+
       const requestId = sendData.requestId;
 
       if (!requestId) {
@@ -475,7 +488,9 @@ export default function AIScreen() {
 
       setTimeout(doPoll, 2000);
     } catch (err: unknown) {
-      const errMsg = err instanceof Error ? err.message : "Terjadi kesalahan koneksi.";
+      const errMsg = err instanceof Error && !err.message.includes("JSON")
+        ? err.message
+        : "Koneksi ke server gagal. Coba lagi dalam beberapa detik.";
       showError(errMsg);
     }
   }, [input, isStreaming, scrollToBottom]);

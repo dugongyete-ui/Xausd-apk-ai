@@ -68,25 +68,28 @@ export async function registerRoutes(app: Express): Promise<Server> {
     res.json({ messages: aiService.getMessages(limit), ready: aiService.isReady() });
   });
 
-  // POST /api/ai/chat — User sends a question to AI
-  app.post("/api/ai/chat", async (req: Request, res: Response) => {
-    try {
-      const { message } = req.body as { message?: string };
-      if (!message || message.trim().length === 0) {
-        res.status(400).json({ error: "Message required" });
-        return;
-      }
-      if (message.trim().length > 500) {
-        res.status(400).json({ error: "Pesan terlalu panjang (maks 500 karakter)" });
-        return;
-      }
-      const snapshot = derivService.getSnapshot();
-      const response = await aiService.chat(message.trim(), snapshot);
-      res.json({ response, messages: aiService.getMessages(20) });
-    } catch (e) {
-      console.error("[Routes] Chat error:", e);
-      res.status(500).json({ error: "AI sedang tidak tersedia. Coba lagi sebentar." });
+  // POST /api/ai/chat — User sends a question, AI processes in background
+  app.post("/api/ai/chat", (req: Request, res: Response) => {
+    const { message } = req.body as { message?: string };
+    if (!message || message.trim().length === 0) {
+      res.status(400).json({ error: "Message required" });
+      return;
     }
+    if (message.trim().length > 500) {
+      res.status(400).json({ error: "Pesan terlalu panjang (maks 500 karakter)" });
+      return;
+    }
+    const trimmed = message.trim();
+    const snapshot = derivService.getSnapshot();
+    const requestId = `req_${Date.now()}`;
+
+    // Start AI processing in background — do NOT await
+    aiService.chat(trimmed, snapshot, requestId).catch((e: unknown) => {
+      console.error("[Routes] Chat background error:", e);
+    });
+
+    // Return immediately so the proxy never times out
+    res.json({ requestId, queued: true });
   });
 
   // POST /api/ai/stream — Streaming chat via Server-Sent Events

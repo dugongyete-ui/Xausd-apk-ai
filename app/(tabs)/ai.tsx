@@ -329,36 +329,6 @@ export default function AIScreen() {
     }, 50);
   }, []);
 
-  const animateWordByWord = useCallback((
-    msgId: string,
-    fullText: string,
-    onDone: () => void
-  ) => {
-    const words = fullText.match(/\S+\s*/g) ?? [];
-    if (words.length === 0) { onDone(); return; }
-    let i = 0;
-    let built = "";
-    const ms = Math.max(25, Math.min(70, Math.floor(1800 / words.length)));
-    const iv = setInterval(() => {
-      if (i < words.length) {
-        built += words[i];
-        i++;
-        const snapshot = built;
-        setMessages((prev) =>
-          prev.map((m) => m.id === msgId ? { ...m, content: snapshot, streaming: true } : m)
-        );
-        scrollToBottom();
-      } else {
-        clearInterval(iv);
-        setMessages((prev) =>
-          prev.map((m) => m.id === msgId ? { ...m, streaming: false } : m)
-        );
-        onDone();
-      }
-    }, ms);
-    return iv;
-  }, [scrollToBottom]);
-
   const sendMessage = useCallback(async () => {
     const text = input.trim();
     if (!text || isStreaming) return;
@@ -397,47 +367,118 @@ export default function AIScreen() {
       return;
     }
 
-    try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 80000);
+    const showError = (msg: string) => {
+      setMessages((prev) =>
+        prev.map((m) => m.id === msgId ? { ...m, content: msg, streaming: false } : m)
+      );
+      setIsStreaming(false);
+    };
 
-      const res = await fetch(`${BACKEND_URL}/api/ai/chat`, {
+    try {
+      // Step 1: Send message — backend queues AI and returns requestId instantly
+      const sendRes = await fetch(`${BACKEND_URL}/api/ai/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ message: text }),
-        signal: controller.signal,
       });
-      clearTimeout(timeoutId);
 
-      let data: { response?: string; error?: string } = {};
-      try {
-        data = await res.json() as { response?: string; error?: string };
-      } catch {
-        throw new Error("AI sedang tidak tersedia. Coba lagi sebentar.");
+      if (!sendRes.ok) {
+        const errData = await sendRes.json().catch(() => ({})) as { error?: string };
+        showError(errData.error || "AI sedang tidak tersedia. Coba lagi sebentar.");
+        return;
       }
 
-      if (!res.ok) {
-        throw new Error(data.error || "AI sedang tidak tersedia. Coba lagi sebentar.");
+      const sendData = await sendRes.json() as { requestId?: string; queued?: boolean };
+      const requestId = sendData.requestId;
+
+      if (!requestId) {
+        showError("AI sedang tidak tersedia. Coba lagi sebentar.");
+        return;
       }
 
-      const reply = data.response?.trim() || "Maaf, AI tidak dapat merespons saat ini.";
+      // Step 2: Poll every 2s for the response matching our requestId
+      // The backend stores requestId in message metadata — guaranteed unique match
+      const startedAt = Date.now();
+      const MAX_WAIT = 90000;
+      let polling = true;
 
-      animateWordByWord(msgId, reply, () => setIsStreaming(false));
+      const doPoll = async () => {
+        if (!polling) return;
+        if (!streamingIdRef.current || streamingIdRef.current !== msgId) {
+          polling = false;
+          return;
+        }
+        if (Date.now() - startedAt > MAX_WAIT) {
+          polling = false;
+          showError("AI memerlukan waktu terlalu lama. Coba lagi sebentar.");
+          return;
+        }
+
+        try {
+          const pollRes = await fetch(`${BACKEND_URL}/api/ai/messages?limit=20`);
+          if (pollRes.ok) {
+            const data = await pollRes.json() as {
+              messages?: Array<{
+                id: string;
+                role: string;
+                content: string;
+                type: string;
+                metadata?: { requestId?: string };
+              }>
+            };
+            const msgs = data.messages ?? [];
+
+            // Find the AI response that matches our exact requestId
+            const matched = msgs.find(
+              (m) =>
+                m.role === "assistant" &&
+                m.type === "user_chat" &&
+                m.metadata?.requestId === requestId
+            );
+
+            if (matched) {
+              polling = false;
+              streamingIdRef.current = null;
+
+              const reply = matched.content.trim() || "Maaf, AI tidak dapat merespons saat ini.";
+              const words = reply.match(/\S+\s*/g) ?? [];
+              let i = 0;
+              let built = "";
+              const ms = Math.max(25, Math.min(70, Math.floor(1800 / Math.max(words.length, 1))));
+
+              const wordTimer = setInterval(() => {
+                if (i < words.length) {
+                  built += words[i];
+                  i++;
+                  const cur = built;
+                  setMessages((prev) =>
+                    prev.map((m) => m.id === msgId ? { ...m, content: cur, streaming: true } : m)
+                  );
+                  scrollToBottom();
+                } else {
+                  clearInterval(wordTimer);
+                  setMessages((prev) =>
+                    prev.map((m) => m.id === msgId ? { ...m, streaming: false } : m)
+                  );
+                  setIsStreaming(false);
+                }
+              }, ms);
+              return;
+            }
+          }
+        } catch { /* keep polling on network error */ }
+
+        if (polling) {
+          setTimeout(doPoll, 2000);
+        }
+      };
+
+      setTimeout(doPoll, 2000);
     } catch (err: unknown) {
-      const isAborted = err instanceof Error && err.name === "AbortError";
-      const errMsg = isAborted
-        ? "AI timeout (>80 detik). Coba lagi sebentar."
-        : err instanceof Error ? err.message : "Terjadi kesalahan koneksi.";
-      setMessages((prev) =>
-        prev.map((m) =>
-          m.id === msgId
-            ? { ...m, content: errMsg, streaming: false }
-            : m
-        )
-      );
-      setIsStreaming(false);
+      const errMsg = err instanceof Error ? err.message : "Terjadi kesalahan koneksi.";
+      showError(errMsg);
     }
-  }, [input, isStreaming, scrollToBottom, animateWordByWord]);
+  }, [input, isStreaming, scrollToBottom]);
 
   const handleKeyPress = useCallback(
     (e: { nativeEvent: { key: string } }) => {

@@ -15,6 +15,7 @@ export interface AIMessage {
     trend?: string;
     outcome?: "win" | "loss";
     entryPrice?: number;
+    requestId?: string;
   };
 }
 
@@ -47,32 +48,52 @@ function stripMarkdown(text: string): string {
 }
 
 // ─── System Prompt ─────────────────────────────────────────────────────────────
-const SYSTEM_PROMPT = `Kamu adalah LIBARTIN AI, asisten analisis trading emas XAUUSD yang terintegrasi penuh dengan aplikasi LIBARTIN.
+const SYSTEM_PROMPT = `Kamu adalah LIBARTIN AI, asisten analisis trading emas XAUUSD yang tertanam langsung di dalam aplikasi LIBARTIN.
 
 IDENTITAS:
 Nama: LIBARTIN AI
-Spesialisasi: Analisis XAUUSD menggunakan strategi Fibonacci Retracement dan EMA Crossover pada timeframe M15 dan M5
-Bahasa: Indonesia, boleh campur istilah teknis Inggris yang lazim
+Spesialisasi: Analisis XAUUSD real-time menggunakan strategi Fibonacci Retracement dan EMA Crossover
+Bahasa: Indonesia. Boleh campur istilah teknis Inggris yang lazim di dunia trading.
+Karakter: Lugas, informatif, tidak bertele-tele. Tidak pernah mengarang data.
 
-STRATEGI APLIKASI:
-Trend M15: Bullish jika harga di atas EMA200 dan EMA50 di atas EMA200. Bearish jika sebaliknya.
-EMA M5: EMA20 sebagai momentum cepat, EMA50 sebagai filter trend intraday. Sinyal hanya valid jika EMA20 di atas EMA50 (Bullish) atau EMA20 di bawah EMA50 (Bearish) pada M5.
-Fibonacci: Anchor adalah fractal 5-bar tertua. Golden Zone adalah 61.8 persen sampai 78.6 persen retracement.
-Konfirmasi entry M5: Pin Bar (Rejection) atau Engulfing di dalam zona Fibonacci.
-Stop Loss: Swing Low untuk Bullish, Swing High untuk Bearish.
-Take Profit 1 (TP1): Scalping cepat 1:1 RR dari SL, maksimal 15 poin dari entry. Exit di sini untuk amankan profit.
-Take Profit 2 (TP2): Target penuh Fibonacci extension minus 27 persen atau 1.8:1 RR, cap 28 poin dari entry. Lebih jauh namun lebih optimal.
-Single Position Rule: Hanya 1 sinyal per anchor fractal.
+STRUKTUR APLIKASI LIBARTIN:
+Aplikasi ini punya 4 tab utama yang selalu tersedia di bagian bawah layar.
+
+Tab 1 - Dashboard: Menampilkan harga XAUUSD live, status koneksi ke Deriv (LIVE/OFFLINE), status pasar (buka/tutup), trend M15 saat ini, nilai EMA50 dan EMA200, jumlah candle M15 dan M5 yang sudah dikumpulkan, level Fibonacci lengkap (Swing High, Golden Zone 61.8%, Deep 78.6%, Swing Low, TP Extension -27%), indikator apakah harga sedang di dalam Golden Zone, serta sinyal aktif jika ada. Ada juga visualisasi chart Fibonacci.
+
+Tab 2 - Sinyal: Menampilkan riwayat semua sinyal yang pernah dihasilkan sistem, termasuk arah (BUY/SELL), harga entry, SL, TP1, TP2, konfirmasi pola candlestick, dan status outcome (WIN, LOSS, atau PENDING). Di bagian atas ada statistik win rate dan distribusi hasil trade.
+
+Tab 3 - AI Chat (tab ini): Tempat pengguna bicara dengan kamu. Kamu bisa menjawab pertanyaan tentang kondisi pasar, strategi, sinyal yang sedang aktif, atau konsep trading umum. Kamu punya akses ke semua data pasar real-time yang dikirim bersama setiap pesan.
+
+Tab 4 - Settings: Pengaturan aplikasi termasuk preferensi notifikasi dan konfigurasi pengguna.
+
+STRATEGI SINYAL LIBARTIN:
+Timeframe analisis: M15 untuk trend dan struktur Fibonacci, M5 untuk konfirmasi entry.
+Trend Bullish: Harga di atas EMA200 DAN EMA50 di atas EMA200 pada M15.
+Trend Bearish: Harga di bawah EMA200 DAN EMA50 di bawah EMA200 pada M15.
+Fibonacci anchor: Fractal 5-bar tertua yang valid pada M15.
+Golden Zone: Retracement 61.8% sampai 78.6% dari swing (zona entry utama).
+Konfirmasi entry M5: Pin Bar Rejection atau Engulfing Bullish/Bearish di dalam Golden Zone.
+Stop Loss Bullish: Di bawah Swing Low fractal. Stop Loss Bearish: Di atas Swing High fractal.
+TP1 (Scalping): Risk-Reward 1:1 dari SL, maksimal 15 poin dari entry. Untuk ambil profit cepat.
+TP2 (Full Target): Fibonacci extension -27% atau RR 1:1.8, cap 28 poin dari entry. Target optimal jika momentum kuat.
+Aturan satu posisi: Hanya satu sinyal aktif per anchor fractal. Sinyal baru hanya muncul jika fractal berubah.
+
+CARA MENJAWAB PERTANYAAN PENGGUNA:
+Jika pengguna tanya kondisi pasar: gunakan data real-time yang dikirim bersama pesannya (harga, trend, EMA, Fibonacci, sinyal aktif).
+Jika pengguna tanya riwayat sinyal atau win rate: arahkan ke tab Sinyal karena kamu tidak punya akses ke data historis sinyal.
+Jika pengguna tanya cara baca chart atau konsep trading: jelaskan secara praktis sesuai konteks aplikasi LIBARTIN.
+Jika pengguna tanya apakah harus BUY atau SELL sekarang: lihat data sinyal aktif yang dikirim. Jika tidak ada sinyal aktif, katakan sistem belum mendeteksi setup valid dan jelaskan kondisi saat ini.
+Jika pengguna tanya tentang tab atau fitur aplikasi: jelaskan berdasarkan struktur aplikasi di atas.
 
 ATURAN KETAT:
-Jangan pernah mengarang atau menebak harga, level EMA, atau level Fibonacci.
-Jangan beri rekomendasi beli atau jual jika tidak ada sinyal aktif dari sistem.
-Jangan janjikan profit atau pastikan hasil trade apapun.
-Semua analisis harus berdasarkan data nyata yang dikirimkan dalam percakapan.
-Kamu boleh mengingat dan merujuk percakapan sebelumnya dalam sesi ini.
+Jangan pernah mengarang harga, level EMA, level Fibonacci, atau data apapun yang tidak ada dalam konteks.
+Jangan berikan rekomendasi entry jika tidak ada sinyal aktif dari sistem.
+Jangan janjikan profit atau pastikan hasil trade apapun. Selalu ingatkan bahwa trading mengandung risiko.
+Ingat percakapan sebelumnya dalam sesi ini dan jadikan referensi jika relevan.
 
 FORMAT RESPONS WAJIB:
-Tulis dalam teks biasa saja. Jangan gunakan markdown, jangan pakai bintang, jangan pakai tanda pagar, jangan pakai garis bawah, jangan pakai backtick, jangan pakai dash sebagai bullet. Gunakan kalimat biasa yang mengalir. Boleh gunakan angka 1, 2, 3 jika perlu urutan. Maksimal 150 kata untuk rekomendasi sinyal.`;
+Tulis dalam teks biasa yang mengalir. Jangan gunakan markdown, bintang, tanda pagar, garis bawah, backtick, atau dash sebagai bullet point. Gunakan angka 1, 2, 3 jika perlu urutan langkah. Untuk rekomendasi sinyal maksimal 180 kata. Untuk penjelasan konsep boleh lebih panjang tapi tetap padat dan tidak bertele-tele.`;
 
 // ─── Call AI API (https native, with retry) ───────────────────────────────────
 function callPollinationsAI(
@@ -197,45 +218,64 @@ function streamWordByWord(
 function buildMarketContext(snapshot: MarketStateSnapshot): string {
   const p = snapshot.currentPrice;
   const fib = snapshot.fibLevels;
+
+  const trendLabel = snapshot.trend === "Bullish"
+    ? "Bullish (Harga > EMA200, EMA50 > EMA200)"
+    : snapshot.trend === "Bearish"
+    ? "Bearish (Harga < EMA200, EMA50 < EMA200)"
+    : snapshot.trend === "No Trade"
+    ? "No Trade (EMA tidak selaras)"
+    : "Loading";
+
   const lines: string[] = [
-    `[DATA PASAR REAL-TIME]`,
+    `[DATA PASAR REAL-TIME — LIBARTIN]`,
     `Waktu: ${new Date().toUTCString()}`,
-    `Harga XAUUSD: ${p !== null ? p.toFixed(2) : "Memuat..."}`,
-    `Trend M15: ${snapshot.trend}`,
-    `EMA50: ${snapshot.ema50 !== null ? snapshot.ema50.toFixed(2) : "N/A"}`,
-    `EMA200: ${snapshot.ema200 !== null ? snapshot.ema200.toFixed(2) : "N/A"}`,
-    `Harga di Golden Zone 61.8-78.6 persen: ${snapshot.inZone ? "YA" : "TIDAK"}`,
-    `Pasar: ${snapshot.marketOpen ? "Buka" : "Tutup"}`,
-    `Koneksi ke Deriv: ${snapshot.connectionStatus}`,
+    `Harga XAUUSD: ${p !== null ? p.toFixed(2) : "Belum tersedia"}`,
+    `Status Pasar: ${snapshot.marketOpen ? "Buka" : "Tutup"}`,
+    `Koneksi Deriv: ${snapshot.connectionStatus}`,
+    ``,
+    `[ANALISIS TEKNIKAL M15]`,
+    `Trend M15: ${trendLabel}`,
+    `EMA50 (M15): ${snapshot.ema50 !== null ? snapshot.ema50.toFixed(2) : "N/A"}`,
+    `EMA200 (M15): ${snapshot.ema200 !== null ? snapshot.ema200.toFixed(2) : "N/A"}`,
+    `Candle M15 terkumpul: ${snapshot.m15CandleCount}`,
+    `Candle M5 terkumpul: ${snapshot.m5CandleCount}`,
+    `Harga di Golden Zone (61.8-78.6%): ${snapshot.inZone ? "YA — harga dalam zona entry" : "TIDAK"}`,
   ];
 
   if (fib) {
     lines.push(
-      `[FIBONACCI LEVELS]`,
-      `Swing High: ${fib.swingHigh.toFixed(2)}`,
-      `61.8 persen Golden: ${fib.level618.toFixed(2)}`,
-      `78.6 persen Deep: ${fib.level786.toFixed(2)}`,
-      `Swing Low: ${fib.swingLow.toFixed(2)}`,
-      `Minus 27 persen Extension TP: ${fib.extensionNeg27.toFixed(2)}`
+      ``,
+      `[FIBONACCI LEVELS (M15 Swing)]`,
+      `Swing High (anchor atas): ${fib.swingHigh.toFixed(2)}`,
+      `Golden 61.8% (zona entry): ${fib.level618.toFixed(2)}`,
+      `Deep 78.6% (zona entry dalam): ${fib.level786.toFixed(2)}`,
+      `Swing Low (anchor bawah): ${fib.swingLow.toFixed(2)}`,
+      `Extension -27% (target TP): ${fib.extensionNeg27.toFixed(2)}`
     );
   } else {
-    lines.push(`[FIBONACCI]: Belum ada struktur swing yang terdeteksi`);
+    lines.push(``, `[FIBONACCI]: Belum ada struktur swing valid yang terdeteksi pada M15`);
   }
 
   if (snapshot.currentSignal) {
     const sig = snapshot.currentSignal;
+    const dir = sig.trend === "Bullish" ? "BUY" : "SELL";
+    const konfirmasi = sig.confirmationType === "engulfing" ? "Engulfing M5" : "Pin Bar Rejection M5";
     lines.push(
+      ``,
       `[SINYAL AKTIF]`,
-      `Arah: ${sig.trend === "Bullish" ? "BUY" : "SELL"}`,
+      `Arah: ${dir}`,
       `Entry: ${sig.entryPrice.toFixed(2)}`,
       `Stop Loss: ${sig.stopLoss.toFixed(2)}`,
-      `TP1 (scalping): ${sig.takeProfit.toFixed(2)} — RR 1:${sig.riskReward}`,
-      ...(sig.takeProfit2 ? [`TP2 (full): ${sig.takeProfit2.toFixed(2)} — RR 1:${sig.riskReward2}`] : []),
-      `Konfirmasi: ${sig.confirmationType === "engulfing" ? "Engulfing M5" : "Pin Bar Rejection M5"}`,
-      `Waktu Sinyal: ${sig.timestampUTC}`
+      `TP1 Scalping: ${sig.takeProfit.toFixed(2)} (RR 1:${sig.riskReward})`,
+      ...(sig.takeProfit2
+        ? [`TP2 Full Target: ${sig.takeProfit2.toFixed(2)} (RR 1:${sig.riskReward2})`]
+        : []),
+      `Konfirmasi: ${konfirmasi}`,
+      `Waktu sinyal: ${sig.timestampUTC}`
     );
   } else {
-    lines.push(`[SINYAL]: Tidak ada sinyal aktif saat ini`);
+    lines.push(``, `[SINYAL]: Tidak ada sinyal aktif saat ini — sistem belum mendeteksi setup valid`);
   }
 
   return lines.join("\n");
@@ -393,7 +433,8 @@ class AIService {
   // ─── User Chat (non-streaming) ─────────────────────────────────────────────
   async chat(
     userMessage: string,
-    snapshot: MarketStateSnapshot
+    snapshot: MarketStateSnapshot,
+    requestId?: string
   ): Promise<string> {
     const marketCtx = buildMarketContext(snapshot);
     const messages: Array<{ role: string; content: string }> = [];
@@ -417,17 +458,22 @@ class AIService {
 
     const response = await callPollinationsAI(messages);
 
-    if (!response) {
-      return "Maaf, AI tidak dapat merespons saat ini. Coba lagi sebentar.";
-    }
-
-    const clean = stripMarkdown(response);
+    // Always pick a final reply — never leave displayMessages empty after a chat
+    const clean = response
+      ? stripMarkdown(response)
+      : "Maaf, AI tidak dapat merespons saat ini. Silakan coba lagi sebentar.";
 
     this.addToHistory("user", userMessage);
     this.addToHistory("assistant", clean);
 
+    // CRITICAL: always add both messages so the frontend poll can find the response
     this.addDisplayMessage({ role: "user", content: userMessage, type: "user_chat" });
-    this.addDisplayMessage({ role: "assistant", content: clean, type: "user_chat" });
+    this.addDisplayMessage({
+      role: "assistant",
+      content: clean,
+      type: "user_chat",
+      ...(requestId ? { metadata: { requestId } } : {}),
+    });
 
     return clean;
   }

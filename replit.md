@@ -3,6 +3,12 @@
 ## Project Overview
 A professional mobile trading analysis app built with Expo (React Native) that performs real-time Fibonacci retracement analysis on XAUUSD (Gold/USD) using live data from Deriv WebSocket. All trading decisions are purely mathematical — no random, no visual assumptions.
 
+## Recent Changes (2026-03-05)
+- **AI Chat input bar fixed**: Was hidden behind the absolute-positioned tab bar. Fixed by adding explicit `paddingBottom = tabBarHeight + insets.bottom` to the root View.
+- **Hint chips made tappable**: EmptyState hint chips now use `Pressable` — tapping fills the TextInput and focuses keyboard.
+- **TP calculation made realistic for scalping**: Formula now uses `floor = max(m5ATR × 2.0, 8pts)` and `cap = max(m5ATR × 4.0, 20pts)`. Fibonacci extension used as target if it falls in range. Applied in both frontend (`TradingContext.tsx`) and backend (`derivService.ts`).
+- **Fibonacci responsiveness improved**: Frontend `findSwings()` changed from 5-bar fractal (required 2 confirmed candles after anchor) to 3-bar fractal (1 confirmed candle). Also removed `PAIR_LOOKBACK=25` limit — now searches full window for pair extremes. This matches the already-fast server implementation and cuts detection delay by one M15 candle (15 minutes faster).
+
 ## Strategy: Deep Pullback Continuation
 - **Analysis Timeframe**: M15 (structure, EMA, swing detection, Fibonacci)
 - **Execution Timeframe**: M5 (entry confirmation — rejection or engulfing)

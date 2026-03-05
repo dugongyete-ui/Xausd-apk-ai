@@ -224,19 +224,18 @@ function calcATR(candles: Candle[], period: number): number {
 }
 
 // ─── Swing Detection ──────────────────────────────────────────────────────────
-// Responsif terhadap pergerakan market terbaru.
+// RESPONSIF: 3-bar fractal (lebih cepat dari 5-bar).
+// ANCHOR ditemukan di n-3 (1 candle konfirmasi setelah fractal, bukan 2).
 //
 // ANCHOR (titik utama Fibonacci):
-//   Bearish → Fractal HIGH terbaru (5-bar: high[i] > 4 neighbors, EMA50 < EMA200)
-//   Bullish → Fractal LOW terbaru (5-bar: low[i] < 4 neighbors, EMA50 > EMA200)
-//   Loop dari n-4: right neighbors sudah closed, live candle tidak disentuh.
-//   Ini mencegah repaint: anchor tidak berubah selama candle masih live.
+//   Bearish → Fractal HIGH terbaru (3-bar: high[i] > 1 neighbor kiri & kanan, EMA50 < EMA200)
+//   Bullish → Fractal LOW terbaru (3-bar: low[i] < 1 neighbor kiri & kanan, EMA50 > EMA200)
 //
 // PAIR EXTREME (ujung range Fibonacci):
-//   Bearish → SwingLow  = LOW TERKECIL (absolute minimum) dalam PAIR_LOOKBACK candle SEBELUM anchor
-//   Bullish → SwingHigh = HIGH TERBESAR (absolute maximum) dalam PAIR_LOOKBACK candle SEBELUM anchor
-//   Menggunakan absolute extreme (bukan hanya local fractal) supaya Fibonacci
-//   benar-benar merentang dari titik terendah ke tertinggi dari impulse move.
+//   Bearish → SwingLow  = LOW TERKECIL di SEMUA candle sebelum anchor (full window)
+//   Bullish → SwingHigh = HIGH TERBESAR di SEMUA candle sebelum anchor (full window)
+//   Full-window search (tanpa PAIR_LOOKBACK limit) supaya Fibonacci merentang
+//   range impuls sesungguhnya seberapa pun jauh anchornya.
 //   Minimum range: 5 points — filter noise/sideways kecil.
 //
 // anchorEpoch = epoch candle fractal → kunci non-repaint anchor.
@@ -245,10 +244,9 @@ function findSwings(
   trend: "Bullish" | "Bearish"
 ): { swingHigh: number; swingLow: number; anchorEpoch: number } | null {
   const LOOKBACK = Math.min(candles.length, 100);
-  const PAIR_LOOKBACK = 25;
   const slice = candles.slice(-LOOKBACK);
   const n = slice.length;
-  if (n < 10) return null;
+  if (n < 6) return null;
 
   const closes = candles.map((c) => c.close);
   const ema50Full = calcEMAFull(closes, EMA50_PERIOD);
@@ -256,11 +254,11 @@ function findSwings(
   const offset = candles.length - LOOKBACK;
 
   if (trend === "Bearish") {
-    for (let i = n - 4; i >= 4; i--) {
+    // 3-bar fractal: mulai dari n-3 (1 candle konfirmasi setelah fractal)
+    for (let i = n - 3; i >= 2; i--) {
       const c = slice[i];
       const isSwingHigh =
-        c.high > slice[i - 1].high && c.high > slice[i - 2].high &&
-        c.high > slice[i + 1].high && c.high > slice[i + 2].high;
+        c.high > slice[i - 1].high && c.high > slice[i + 1].high;
       if (!isSwingHigh) continue;
 
       const absI = offset + i;
@@ -268,11 +266,9 @@ function findSwings(
       const e200 = ema200Full[absI];
       if (isNaN(e50) || isNaN(e200) || e50 >= e200) continue;
 
-      // SwingLow = LOW TERKECIL (absolute minimum) dalam PAIR_LOOKBACK candle sebelum anchor.
-      // Absolute extreme supaya Fibonacci merentang full range dari impulse move.
-      const searchStart = Math.max(0, i - PAIR_LOOKBACK);
+      // SwingLow = LOW TERKECIL di SEMUA candle sebelum anchor (full window)
       let swingLow = Infinity;
-      for (let j = searchStart; j < i; j++) {
+      for (let j = 0; j < i; j++) {
         if (slice[j].low < swingLow) swingLow = slice[j].low;
       }
       if (!isFinite(swingLow)) continue;
@@ -281,11 +277,11 @@ function findSwings(
       return { swingHigh: c.high, swingLow, anchorEpoch: c.epoch };
     }
   } else {
-    for (let i = n - 4; i >= 4; i--) {
+    // 3-bar fractal: mulai dari n-3 (1 candle konfirmasi setelah fractal)
+    for (let i = n - 3; i >= 2; i--) {
       const c = slice[i];
       const isSwingLow =
-        c.low < slice[i - 1].low && c.low < slice[i - 2].low &&
-        c.low < slice[i + 1].low && c.low < slice[i + 2].low;
+        c.low < slice[i - 1].low && c.low < slice[i + 1].low;
       if (!isSwingLow) continue;
 
       const absI = offset + i;
@@ -293,11 +289,9 @@ function findSwings(
       const e200 = ema200Full[absI];
       if (isNaN(e50) || isNaN(e200) || e50 <= e200) continue;
 
-      // SwingHigh = HIGH TERBESAR (absolute maximum) dalam PAIR_LOOKBACK candle sebelum anchor.
-      // Absolute extreme supaya Fibonacci merentang full range dari impulse move.
-      const searchStart = Math.max(0, i - PAIR_LOOKBACK);
+      // SwingHigh = HIGH TERBESAR di SEMUA candle sebelum anchor (full window)
       let swingHigh = -Infinity;
-      for (let j = searchStart; j < i; j++) {
+      for (let j = 0; j < i; j++) {
         if (slice[j].high > swingHigh) swingHigh = slice[j].high;
       }
       if (!isFinite(swingHigh)) continue;
@@ -898,9 +892,14 @@ export function TradingProvider({ children }: { children: ReactNode }) {
     const slDistance = Math.abs(currentPrice - sl);
     if (slDistance < atr * 0.1 || atr < 0.1) return null;
 
-    // TP adaptif berdasarkan ATR — realistis untuk scalping
+    // TP realistis scalping XAUUSD M5:
+    // - Floor: max(m5ATR × 2.0, 8 pts) agar tidak terlalu kecil
+    // - Cap:   max(m5ATR × 4.0, 20 pts) agar tidak terlalu jauh untuk scalping
+    // - Fibonacci extension dipakai jika jatuh dalam range tsb
     const extDist = Math.abs(fibLevels.extensionNeg27 - currentPrice);
-    const atpDist = Math.min(atr * 3.5, Math.max(atr * 1.5, Math.min(extDist, atr * 2.5)));
+    const tpFloor = Math.max(m5ATR * 2.0, 8);
+    const tpCap   = Math.max(m5ATR * 4.0, 20);
+    const atpDist = Math.min(Math.max(extDist, tpFloor), tpCap);
     const tp = trendDir === "Bearish"
       ? currentPrice - atpDist
       : currentPrice + atpDist;

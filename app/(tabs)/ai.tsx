@@ -221,7 +221,7 @@ const bubbleStyles = StyleSheet.create({
 });
 
 // ─── Empty State ───────────────────────────────────────────────────────────────
-function EmptyState() {
+function EmptyState({ onHintPress }: { onHintPress: (text: string) => void }) {
   return (
     <View style={emptyStyles.container}>
       <View style={emptyStyles.iconWrap}>
@@ -237,9 +237,16 @@ function EmptyState() {
           "Jelaskan sinyal SELL saat ini",
           "Apa itu Pin Bar dan kapan valid?",
         ].map((hint) => (
-          <View key={hint} style={emptyStyles.hintChip}>
+          <Pressable
+            key={hint}
+            style={({ pressed }) => [
+              emptyStyles.hintChip,
+              pressed && emptyStyles.hintChipPressed,
+            ]}
+            onPress={() => onHintPress(hint)}
+          >
             <Text style={emptyStyles.hintText}>{hint}</Text>
-          </View>
+          </Pressable>
         ))}
       </View>
     </View>
@@ -287,11 +294,15 @@ const emptyStyles = StyleSheet.create({
     borderColor: C.border,
     borderRadius: 10,
     paddingHorizontal: 14,
-    paddingVertical: 10,
+    paddingVertical: 12,
+  },
+  hintChipPressed: {
+    backgroundColor: C.goldBg,
+    borderColor: C.gold + "66",
   },
   hintText: {
     fontFamily: "Inter_400Regular",
-    fontSize: 12,
+    fontSize: 13,
     color: C.textSub,
   },
 });
@@ -304,6 +315,7 @@ export default function AIScreen() {
   const [isStreaming, setIsStreaming] = useState(false);
   const flatListRef = useRef<FlatList>(null);
   const streamingIdRef = useRef<string | null>(null);
+  const inputRef = useRef<TextInput>(null);
 
   const scrollToBottom = useCallback(() => {
     setTimeout(() => {
@@ -443,8 +455,15 @@ export default function AIScreen() {
     [sendMessage]
   );
 
+  const handleHintPress = useCallback((hint: string) => {
+    setInput(hint);
+    setTimeout(() => inputRef.current?.focus(), 100);
+  }, []);
+
+  const tabBarHeight = Platform.OS === "web" ? 84 : 60;
+
   return (
-    <View style={[styles.root, { paddingTop: insets.top }]}>
+    <View style={[styles.root, { paddingTop: insets.top, paddingBottom: tabBarHeight + insets.bottom }]}>
       <View style={styles.header}>
         <View style={styles.headerLeft}>
           <View style={styles.headerDot} />
@@ -453,28 +472,28 @@ export default function AIScreen() {
         <Text style={styles.headerSub}>XAUUSD Trading Advisor</Text>
       </View>
 
-      <KeyboardAvoidingView
-        style={styles.flex}
-        behavior={Platform.OS === "ios" ? "padding" : "padding"}
-        keyboardVerticalOffset={Platform.OS === "ios" ? 0 : 60}
-      >
-        <View style={styles.flex}>
-          {messages.length === 0 ? (
-            <EmptyState />
-          ) : (
-            <FlatList
-              ref={flatListRef}
-              data={messages}
-              keyExtractor={(m) => m.id}
-              renderItem={({ item }) => <MessageBubble msg={item} />}
-              contentContainerStyle={styles.listContent}
-              onContentSizeChange={scrollToBottom}
-              showsVerticalScrollIndicator={false}
-              keyboardShouldPersistTaps="handled"
-            />
-          )}
-        </View>
+      <View style={styles.flex}>
+        {messages.length === 0 ? (
+          <EmptyState onHintPress={handleHintPress} />
+        ) : (
+          <FlatList
+            ref={flatListRef}
+            data={messages}
+            keyExtractor={(m) => m.id}
+            renderItem={({ item }) => <MessageBubble msg={item} />}
+            contentContainerStyle={styles.listContent}
+            onContentSizeChange={scrollToBottom}
+            showsVerticalScrollIndicator={false}
+            keyboardShouldPersistTaps="handled"
+            style={styles.flex}
+          />
+        )}
+      </View>
 
+      <KeyboardAvoidingView
+        behavior={Platform.OS === "ios" ? "padding" : Platform.OS === "web" ? undefined : "height"}
+        keyboardVerticalOffset={Platform.OS === "ios" ? 0 : 0}
+      >
         <View style={styles.inputBar}>
           {isStreaming && (
             <View style={styles.thinkingBar}>
@@ -484,6 +503,7 @@ export default function AIScreen() {
           )}
           <View style={styles.inputRow}>
             <TextInput
+              ref={inputRef}
               style={styles.input}
               value={input}
               onChangeText={setInput}
@@ -492,6 +512,7 @@ export default function AIScreen() {
               multiline
               maxLength={500}
               onKeyPress={handleKeyPress}
+              onSubmitEditing={sendMessage}
               editable={!isStreaming}
               returnKeyType="send"
               blurOnSubmit={false}
@@ -510,7 +531,6 @@ export default function AIScreen() {
               )}
             </Pressable>
           </View>
-          <View style={{ height: insets.bottom > 0 ? insets.bottom : Platform.OS === "web" ? 8 : 4 }} />
         </View>
       </KeyboardAvoidingView>
     </View>

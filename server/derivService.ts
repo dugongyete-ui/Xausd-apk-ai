@@ -685,13 +685,14 @@ class DerivService {
       return;
     }
 
-    // TP realistis M5 scalping: gunakan M5 ATR (bukan M15 ATR yang terlalu besar)
-    // M5 ATR untuk XAUUSD biasanya 2-6 poin → TP target 3-18 poin
-    // - Floor: m5ATR × 1.5 (minimum TP yang layak)
-    // - Cap: m5ATR × 3.0 (tidak terlalu jauh untuk scalping)
-    // - Referensi: Fibonacci extension dipakai jika dalam range, tapi di-cap dengan M5 ATR
+    // TP realistis scalping XAUUSD M5:
+    // - Floor: max(m5ATR × 2.0, 8 pts) agar tidak terlalu kecil
+    // - Cap:   max(m5ATR × 4.0, 20 pts) agar tidak terlalu jauh untuk scalping
+    // - Fibonacci extension dipakai jika jatuh dalam range tsb
     const extDist = Math.abs(fib.extensionNeg27 - this.currentPrice);
-    const atpDist = Math.max(m5ATR * 1.5, Math.min(extDist, m5ATR * 3.0));
+    const tpFloor = Math.max(m5ATR * 2.0, 8);
+    const tpCap   = Math.max(m5ATR * 4.0, 20);
+    const atpDist = Math.min(Math.max(extDist, tpFloor), tpCap);
     const tp = trend === "Bearish"
       ? this.currentPrice - atpDist
       : this.currentPrice + atpDist;

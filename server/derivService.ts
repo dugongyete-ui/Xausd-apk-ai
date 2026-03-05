@@ -108,6 +108,8 @@ export interface MarketStateSnapshot {
   trend: TrendState;
   ema50: number | null;
   ema200: number | null;
+  ema20m5: number | null;
+  ema50m5: number | null;
   fibLevels: FibLevels | null;
   currentSignal: TradingSignal | null;
   inZone: boolean;
@@ -125,6 +127,7 @@ const M15_GRAN = 900;
 const M15_COUNT = 300;
 const M5_GRAN = 300;
 const M5_COUNT = 100;
+const EMA20_PERIOD = 20;
 const EMA50_PERIOD = 50;
 const EMA200_PERIOD = 200;
 const ATR_PERIOD = 14;
@@ -835,6 +838,19 @@ class DerivService {
       ema200 = arr.length > 0 ? arr[arr.length - 1] : null;
     }
 
+    const m5Closes = this.m5Candles.map((c) => c.close);
+    let ema20m5: number | null = null;
+    let ema50m5: number | null = null;
+
+    if (m5Closes.length >= EMA20_PERIOD) {
+      const arr = calcEMA(m5Closes, EMA20_PERIOD);
+      ema20m5 = arr.length > 0 ? arr[arr.length - 1] : null;
+    }
+    if (m5Closes.length >= EMA50_PERIOD) {
+      const arr = calcEMA(m5Closes, EMA50_PERIOD);
+      ema50m5 = arr.length > 0 ? arr[arr.length - 1] : null;
+    }
+
     const trend = this.m15Candles.length >= EMA200_PERIOD ? getTrend(this.m15Candles) : "Loading";
 
     let inZone = false;
@@ -849,6 +865,8 @@ class DerivService {
       trend,
       ema50,
       ema200,
+      ema20m5,
+      ema50m5,
       fibLevels: this.fibLevels,
       currentSignal: this.currentSignal,
       inZone,

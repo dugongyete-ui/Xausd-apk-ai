@@ -73,7 +73,10 @@ Trend Bullish: Harga di atas EMA200 DAN EMA50 di atas EMA200 pada M15.
 Trend Bearish: Harga di bawah EMA200 DAN EMA50 di bawah EMA200 pada M15.
 Fibonacci anchor: Fractal 5-bar tertua yang valid pada M15.
 Golden Zone: Retracement 61.8% sampai 78.6% dari swing (zona entry utama).
-Konfirmasi entry M5: Pin Bar Rejection atau Engulfing Bullish/Bearish di dalam Golden Zone.
+Konfirmasi entry M5 (TIGA syarat wajib terpenuhi bersamaan):
+1. Harga berada di dalam Golden Zone (61.8% - 78.6%).
+2. Pola candlestick konfirmasi: Pin Bar Rejection atau Engulfing Bullish/Bearish pada M5.
+3. EMA alignment M5: EMA20 > EMA50 untuk konfirmasi Bullish. EMA20 < EMA50 untuk konfirmasi Bearish.
 Stop Loss Bullish: Di bawah Swing Low fractal. Stop Loss Bearish: Di atas Swing High fractal.
 TP1 (Scalping): Risk-Reward 1:1 dari SL, maksimal 15 poin dari entry. Untuk ambil profit cepat.
 TP2 (Full Target): Fibonacci extension -27% atau RR 1:1.8, cap 28 poin dari entry. Target optimal jika momentum kuat.
@@ -227,6 +230,15 @@ function buildMarketContext(snapshot: MarketStateSnapshot): string {
     ? "No Trade (EMA tidak selaras)"
     : "Loading";
 
+  const m5EmaStatus = (() => {
+    const e20 = snapshot.ema20m5;
+    const e50 = snapshot.ema50m5;
+    if (e20 === null || e50 === null) return "Belum cukup candle M5";
+    if (e20 > e50) return `Bullish (EMA20 ${e20.toFixed(2)} > EMA50 ${e50.toFixed(2)})`;
+    if (e20 < e50) return `Bearish (EMA20 ${e20.toFixed(2)} < EMA50 ${e50.toFixed(2)})`;
+    return `Netral (EMA20 = EMA50 = ${e20.toFixed(2)})`;
+  })();
+
   const lines: string[] = [
     `[DATA PASAR REAL-TIME — LIBARTIN]`,
     `Waktu: ${new Date().toUTCString()}`,
@@ -234,11 +246,16 @@ function buildMarketContext(snapshot: MarketStateSnapshot): string {
     `Status Pasar: ${snapshot.marketOpen ? "Buka" : "Tutup"}`,
     `Koneksi Deriv: ${snapshot.connectionStatus}`,
     ``,
-    `[ANALISIS TEKNIKAL M15]`,
+    `[ANALISIS TEKNIKAL M15 — Trend & Struktur]`,
     `Trend M15: ${trendLabel}`,
     `EMA50 (M15): ${snapshot.ema50 !== null ? snapshot.ema50.toFixed(2) : "N/A"}`,
     `EMA200 (M15): ${snapshot.ema200 !== null ? snapshot.ema200.toFixed(2) : "N/A"}`,
     `Candle M15 terkumpul: ${snapshot.m15CandleCount}`,
+    ``,
+    `[ANALISIS TEKNIKAL M5 — Konfirmasi Entry]`,
+    `EMA20 (M5): ${snapshot.ema20m5 !== null ? snapshot.ema20m5.toFixed(2) : "N/A"}`,
+    `EMA50 (M5): ${snapshot.ema50m5 !== null ? snapshot.ema50m5.toFixed(2) : "N/A"}`,
+    `EMA Alignment M5: ${m5EmaStatus}`,
     `Candle M5 terkumpul: ${snapshot.m5CandleCount}`,
     `Harga di Golden Zone (61.8-78.6%): ${snapshot.inZone ? "YA — harga dalam zona entry" : "TIDAK"}`,
   ];

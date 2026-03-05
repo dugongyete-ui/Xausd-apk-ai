@@ -19,6 +19,7 @@ import {
   sendTPAlert,
   sendSLAlert,
 } from "@/services/NotificationService";
+import { playSignalSound, unlockAudioContext } from "@/services/SoundService";
 
 const BACKGROUND_FETCH_TASK = "libartin-bg-fetch";
 
@@ -476,6 +477,11 @@ export function TradingProvider({ children }: { children: ReactNode }) {
   // Fibonacci updates when EITHER anchor changes (new fractal) OR pairValue changes
   // (market made new extreme → zone shifts responsively).
   const lastSwingRef = useRef<{ anchorEpoch: number; trend: string; pairValue: number } | null>(null);
+
+  // ─── Startup: unlock audio context on web ────────────────────────────────
+  useEffect(() => {
+    unlockAudioContext();
+  }, []);
 
   // ─── Startup: load all cached data instantly ──────────────────────────────
   useEffect(() => {
@@ -1016,6 +1022,7 @@ export function TradingProvider({ children }: { children: ReactNode }) {
     if (!currentSignal) return;
     if (currentSignal.id === prevSignalIdRef.current) return;
     prevSignalIdRef.current = currentSignal.id;
+    playSignalSound("signal").catch(() => {});
     if (notificationEnabled && Platform.OS !== "web") {
       sendSignalNotification({
         trend: currentSignal.trend,
@@ -1056,6 +1063,7 @@ export function TradingProvider({ children }: { children: ReactNode }) {
         tpSlNotifiedRef.current.sl = true;
         updateSignalOutcome(activeSignal.id, "win");
         setActiveSignal(null);
+        playSignalSound("tp").catch(() => {});
         if (BACKEND_URL) {
           fetch(`${BACKEND_URL}/api/ai/outcome`, {
             method: "POST",
@@ -1084,6 +1092,7 @@ export function TradingProvider({ children }: { children: ReactNode }) {
         tpSlNotifiedRef.current.tp = true;
         updateSignalOutcome(activeSignal.id, "loss");
         setActiveSignal(null);
+        playSignalSound("sl").catch(() => {});
         if (BACKEND_URL) {
           fetch(`${BACKEND_URL}/api/ai/outcome`, {
             method: "POST",

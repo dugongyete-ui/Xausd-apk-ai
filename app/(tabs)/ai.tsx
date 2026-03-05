@@ -323,6 +323,36 @@ export default function AIScreen() {
     }, 50);
   }, []);
 
+  const animateWordByWord = useCallback((
+    msgId: string,
+    fullText: string,
+    onDone: () => void
+  ) => {
+    const words = fullText.match(/\S+\s*/g) ?? [];
+    if (words.length === 0) { onDone(); return; }
+    let i = 0;
+    let built = "";
+    const ms = Math.max(25, Math.min(70, Math.floor(1800 / words.length)));
+    const iv = setInterval(() => {
+      if (i < words.length) {
+        built += words[i];
+        i++;
+        const snapshot = built;
+        setMessages((prev) =>
+          prev.map((m) => m.id === msgId ? { ...m, content: snapshot, streaming: true } : m)
+        );
+        scrollToBottom();
+      } else {
+        clearInterval(iv);
+        setMessages((prev) =>
+          prev.map((m) => m.id === msgId ? { ...m, streaming: false } : m)
+        );
+        onDone();
+      }
+    }, ms);
+    return iv;
+  }, [scrollToBottom]);
+
   const sendMessage = useCallback(async () => {
     const text = input.trim();
     if (!text || isStreaming) return;
@@ -335,11 +365,11 @@ export default function AIScreen() {
       content: text,
     };
 
-    const streamId = `a_${Date.now()}`;
-    streamingIdRef.current = streamId;
+    const msgId = `a_${Date.now()}`;
+    streamingIdRef.current = msgId;
 
     const placeholderMsg: ChatMessage = {
-      id: streamId,
+      id: msgId,
       role: "assistant",
       content: "",
       streaming: true,
@@ -352,7 +382,7 @@ export default function AIScreen() {
     if (!BACKEND_URL) {
       setMessages((prev) =>
         prev.map((m) =>
-          m.id === streamId
+          m.id === msgId
             ? { ...m, content: "Backend tidak tersambung. Pastikan server berjalan.", streaming: false }
             : m
         )
@@ -362,89 +392,30 @@ export default function AIScreen() {
     }
 
     try {
-      const response = await fetch(`${BACKEND_URL}/api/ai/stream`, {
+      const res = await fetch(`${BACKEND_URL}/api/ai/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ message: text }),
       });
 
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}`);
-      }
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
 
-      const reader = response.body?.getReader();
-      if (!reader) throw new Error("ReadableStream tidak tersedia");
+      const data = await res.json() as { response?: string; error?: string };
+      const reply = data.response?.trim() || "Maaf, AI tidak dapat merespons saat ini.";
 
-      const decoder = new TextDecoder("utf-8");
-      let buffer = "";
-      let accumulated = "";
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n");
-        buffer = lines.pop() ?? "";
-
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (!trimmed.startsWith("data: ")) continue;
-          const data = trimmed.slice(6);
-
-          if (data === "[DONE]") {
-            setMessages((prev) =>
-              prev.map((m) =>
-                m.id === streamId ? { ...m, streaming: false } : m
-              )
-            );
-            setIsStreaming(false);
-            scrollToBottom();
-            return;
-          }
-
-          try {
-            const parsed = JSON.parse(data);
-            if (parsed.error) {
-              throw new Error(parsed.error);
-            }
-            if (parsed.chunk) {
-              accumulated += parsed.chunk;
-              const current = accumulated;
-              setMessages((prev) =>
-                prev.map((m) =>
-                  m.id === streamId ? { ...m, content: current, streaming: true } : m
-                )
-              );
-              scrollToBottom();
-            }
-          } catch (parseErr) {
-            // skip malformed chunk
-          }
-        }
-      }
-
-      setMessages((prev) =>
-        prev.map((m) => (m.id === streamId ? { ...m, streaming: false } : m))
-      );
+      animateWordByWord(msgId, reply, () => setIsStreaming(false));
     } catch (err: unknown) {
-      const errMsg =
-        err instanceof Error ? err.message : "Terjadi kesalahan. Coba lagi.";
+      const errMsg = err instanceof Error ? err.message : "Terjadi kesalahan.";
       setMessages((prev) =>
         prev.map((m) =>
-          m.id === streamId
-            ? {
-                ...m,
-                content: `Gagal menghubungi AI: ${errMsg}`,
-                streaming: false,
-              }
+          m.id === msgId
+            ? { ...m, content: `Gagal menghubungi AI: ${errMsg}`, streaming: false }
             : m
         )
       );
-    } finally {
       setIsStreaming(false);
     }
-  }, [input, isStreaming, scrollToBottom]);
+  }, [input, isStreaming, scrollToBottom, animateWordByWord]);
 
   const handleKeyPress = useCallback(
     (e: { nativeEvent: { key: string } }) => {

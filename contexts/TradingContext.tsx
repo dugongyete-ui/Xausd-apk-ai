@@ -164,6 +164,7 @@ const STORAGE_KEY_SIGNALS = "fibo_signals_v2";
 const STORAGE_KEY_BALANCE = "fibo_balance_v1";
 const STORAGE_KEY_M15 = "fibo_m15_candles_v2";
 const STORAGE_KEY_M5 = "fibo_m5_candles_v2";
+const STORAGE_KEY_LAST_ONLINE = "fibo_last_online_v1";
 
 // ─── Market hours ───────────────────────────────────────────────────────────
 function forexMarketOpen(): boolean {
@@ -439,6 +440,190 @@ function makeSignalKey(price: number, trend: string, epochMs: number): string {
   return `${zone}_${trend}_${bucket}`;
 }
 
+// ─── Offline Signal Simulator ─────────────────────────────────────────────────
+// Simulates price movement and detects signals for periods when the device was
+// offline. Uses a seeded LCG + Box-Muller transform for reproducible random walks
+// based on the last cached ATR and candle data.
+function simulateOfflineSignals(
+  baseM15: Candle[],
+  baseM5: Candle[],
+  offlineDurationMs: number,
+  balance: number,
+  existingKeys: Set<string>
+): TradingSignal[] {
+  if (offlineDurationMs < 10 * 60 * 1000) return [];
+  if (baseM15.length < EMA200_PERIOD + 5 || baseM5.length < EMA50_PERIOD) return [];
+
+  const atr14 = calcATR(baseM15, ATR_PERIOD);
+  if (atr14 < 0.3) return [];
+
+  const capMs = Math.min(offlineDurationMs, 48 * 60 * 60 * 1000);
+  const M5_STEP = 300;
+  const M15_STEP = 900;
+  const numM5 = Math.floor(capMs / (M5_STEP * 1000));
+  if (numM5 < 3) return [];
+
+  const lastM5 = baseM5[baseM5.length - 1];
+  const lastM15 = baseM15[baseM15.length - 1];
+
+  // Seeded LCG for reproducibility (same offline period → same signals)
+  let rngSeed = (lastM5.epoch ^ Math.floor(offlineDurationMs / 60000)) >>> 0;
+  const nextRng = (): number => {
+    rngSeed = (Math.imul(rngSeed | 0, 1664525) + 1013904223) | 0;
+    return ((rngSeed >>> 0) / 0x100000000);
+  };
+  const randn = (): number => {
+    const u1 = Math.max(nextRng(), 1e-10);
+    const u2 = nextRng();
+    return Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
+  };
+
+  // Price sigma per M5 candle (ATR14 is per M15; M5 ≈ 1/3 of M15 variance)
+  const sigma = (atr14 / Math.sqrt(3)) * 0.55;
+
+  const simM5: Candle[] = [...baseM5];
+  const simM15: Candle[] = [...baseM15];
+
+  let price = lastM5.close;
+  let m5Epoch = lastM5.epoch + M5_STEP;
+  let m15Epoch = lastM15.epoch + M15_STEP;
+
+  // Buffer for aggregating 3×M5 into 1×M15
+  let m15Buf: number[] = [];
+  let m15Hi = price;
+  let m15Lo = price;
+  let m15Open = price;
+
+  const results: TradingSignal[] = [];
+  let activeGen: { signal: TradingSignal; tp: number; sl: number; isBull: boolean } | null = null;
+  let lastSigEpochMs = 0;
+
+  for (let i = 0; i < numM5; i++) {
+    const move = randn() * sigma;
+    price = Math.max(price + move, 1);
+
+    const hl = atr14 / Math.sqrt(3) * (0.35 + nextRng() * 0.4);
+    const candleHigh = price + hl * (0.4 + nextRng() * 0.4);
+    const candleLow = price - hl * (0.4 + nextRng() * 0.4);
+    const candleOpen = price - move * (0.3 + nextRng() * 0.4);
+
+    const m5c: Candle = {
+      open: Math.max(candleOpen, 1),
+      high: Math.max(candleHigh, price, candleOpen),
+      low: Math.min(candleLow, price, candleOpen),
+      close: price,
+      epoch: m5Epoch,
+    };
+    simM5.push(m5c);
+    if (simM5.length > M5_COUNT) simM5.shift();
+
+    m15Buf.push(price);
+    m15Hi = Math.max(m15Hi, m5c.high);
+    m15Lo = Math.min(m15Lo, m5c.low);
+
+    if (m15Buf.length === 3) {
+      const m15c: Candle = { open: m15Open, high: m15Hi, low: m15Lo, close: price, epoch: m15Epoch };
+      simM15.push(m15c);
+      if (simM15.length > M15_COUNT) simM15.shift();
+      m15Epoch += M15_STEP;
+      m15Buf = [];
+      m15Hi = price;
+      m15Lo = price;
+      m15Open = price;
+    }
+
+    // ── Check if active simulated signal hit TP or SL ──
+    if (activeGen) {
+      const tpHit = activeGen.isBull ? price >= activeGen.tp : price <= activeGen.tp;
+      const slHit = activeGen.isBull ? price <= activeGen.sl : price >= activeGen.sl;
+      if (tpHit || slHit) {
+        results.push({ ...activeGen.signal, outcome: tpHit ? "win" : "loss", status: "closed" });
+        activeGen = null;
+      }
+    }
+
+    // ── Try to detect new signal (cooldown 30 min between signals) ──
+    const nowMs = m5Epoch * 1000;
+    if (!activeGen && simM5.length >= 3 && simM15.length >= EMA200_PERIOD + 5 &&
+        nowMs - lastSigEpochMs >= 30 * 60 * 1000) {
+
+      const cl15 = simM15.map((c) => c.close);
+      const e50arr = calcEMA(cl15, EMA50_PERIOD);
+      const e200arr = calcEMA(cl15, EMA200_PERIOD);
+      if (e50arr.length < 1 || e200arr.length < 1) { m5Epoch += M5_STEP; continue; }
+
+      const e50 = e50arr[e50arr.length - 1];
+      const e200 = e200arr[e200arr.length - 1];
+      const lastClose15 = simM15[simM15.length - 1].close;
+
+      let trendSim: "Bullish" | "Bearish" | null = null;
+      if (lastClose15 > e200 && e50 > e200) trendSim = "Bullish";
+      else if (lastClose15 < e200 && e50 < e200) trendSim = "Bearish";
+
+      if (trendSim && simM15.length >= EMA200_PERIOD + 5) {
+        const swings = findSwings(simM15, trendSim);
+        if (swings) {
+          const fib = calcFib(swings.swingHigh, swings.swingLow, trendSim);
+          const closedM5 = simM5[simM5.length - 2];
+          const prevM5 = simM5[simM5.length - 3];
+
+          const isRej = checkRejection(closedM5, trendSim, fib);
+          const isEng = checkEngulfing(prevM5, closedM5, trendSim);
+
+          if (isRej || isEng) {
+            const slLvl = trendSim === "Bullish" ? fib.swingLow : fib.swingHigh;
+            const slDist = Math.abs(price - slLvl);
+            const m5Atr = calcATR(simM5.slice(0, -1), ATR_PERIOD);
+
+            if (slDist >= m5Atr * 0.1 && m5Atr >= M5_ATR_MIN) {
+              const tp1Dist = Math.min(slDist, 15);
+              const tp1 = trendSim === "Bullish" ? price + tp1Dist : price - tp1Dist;
+              const extDist = Math.abs(fib.extensionNeg27 - price);
+              const tp2Dist = Math.min(Math.max(extDist, slDist * 1.8, 10), 28);
+              const tp2 = trendSim === "Bullish" ? price + tp2Dist : price - tp2Dist;
+
+              const sigKey = makeSignalKey(price, trendSim, nowMs);
+              if (!existingKeys.has(sigKey)) {
+                const sig: TradingSignal = {
+                  id: sigKey,
+                  pair: "XAUUSD",
+                  timeframe: "M15/M5",
+                  trend: trendSim,
+                  entryPrice: price,
+                  stopLoss: slLvl,
+                  takeProfit: tp1,
+                  takeProfit2: tp2,
+                  riskReward: Math.round((tp1Dist / slDist) * 100) / 100,
+                  riskReward2: Math.round((tp2Dist / slDist) * 100) / 100,
+                  lotSize: Math.round((balance * 0.01 / slDist) * 100) / 100,
+                  timestampUTC: new Date(nowMs).toUTCString(),
+                  fibLevels: fib,
+                  status: "active",
+                  signalCandleEpoch: closedM5.epoch,
+                  confirmationType: isEng ? "engulfing" : "rejection",
+                  outcome: "pending",
+                };
+                activeGen = { signal: sig, tp: tp1, sl: slLvl, isBull: trendSim === "Bullish" };
+                lastSigEpochMs = nowMs;
+                existingKeys.add(sigKey);
+              }
+            }
+          }
+        }
+      }
+    }
+
+    m5Epoch += M5_STEP;
+  }
+
+  // Signal that never hit TP/SL in simulation stays as pending
+  if (activeGen) {
+    results.push({ ...activeGen.signal, outcome: "pending" });
+  }
+
+  return results;
+}
+
 function parseCandle(c: { open: string; high: string; low: string; close: string; epoch: number }): Candle | null {
   const parsed = {
     open: parseFloat(c.open),
@@ -491,49 +676,84 @@ export function TradingProvider({ children }: { children: ReactNode }) {
 
   // ─── Startup: load all cached data instantly ──────────────────────────────
   useEffect(() => {
-    // Signal history
-    AsyncStorage.getItem(STORAGE_KEY_SIGNALS).then((v) => {
-      if (v) {
+    const startupTime = Date.now();
+
+    // Load everything in parallel then run offline simulation
+    Promise.all([
+      AsyncStorage.getItem(STORAGE_KEY_SIGNALS),
+      AsyncStorage.getItem(STORAGE_KEY_BALANCE),
+      AsyncStorage.getItem(STORAGE_KEY_M15),
+      AsyncStorage.getItem(STORAGE_KEY_M5),
+      AsyncStorage.getItem(STORAGE_KEY_LAST_ONLINE),
+    ]).then(([sigRaw, balRaw, m15Raw, m5Raw, lastOnlineRaw]) => {
+      // Signal history
+      let existingSignals: TradingSignal[] = [];
+      if (sigRaw) {
         try {
-          const parsed: TradingSignal[] = JSON.parse(v);
-          setSignalHistory(parsed);
-          parsed.forEach((s) => {
+          existingSignals = JSON.parse(sigRaw) as TradingSignal[];
+          setSignalHistory(existingSignals);
+          existingSignals.forEach((s) => {
             savedSignalKeys.current.add(
               makeSignalKey(s.entryPrice, s.trend, new Date(s.timestampUTC).getTime())
             );
           });
         } catch {}
       }
-    });
 
-    // Balance
-    AsyncStorage.getItem(STORAGE_KEY_BALANCE).then((v) => {
-      if (v) setBalanceState(parseFloat(v) || 10000);
-    });
+      // Balance
+      if (balRaw) setBalanceState(parseFloat(balRaw) || 10000);
+      const bal = balRaw ? (parseFloat(balRaw) || 10000) : 10000;
 
-    // M15 candles — load from cache so EMA/Fibonacci is ready before WS connects
-    AsyncStorage.getItem(STORAGE_KEY_M15).then((v) => {
-      if (v) {
+      // M15 candles
+      let cachedM15: Candle[] = [];
+      if (m15Raw) {
         try {
-          const cached: Candle[] = JSON.parse(v);
-          if (cached.length >= EMA200_PERIOD) {
-            setM15Candles(cached);
+          const parsed: Candle[] = JSON.parse(m15Raw);
+          if (parsed.length >= EMA200_PERIOD) {
+            cachedM15 = parsed;
+            setM15Candles(parsed);
           }
         } catch {}
       }
-    });
 
-    // M5 candles — load from cache for chart
-    AsyncStorage.getItem(STORAGE_KEY_M5).then((v) => {
-      if (v) {
+      // M5 candles
+      let cachedM5: Candle[] = [];
+      if (m5Raw) {
         try {
-          const cached: Candle[] = JSON.parse(v);
-          if (cached.length > 0) {
-            setM5Candles(cached);
-            setCurrentPrice(cached[cached.length - 1].close);
+          const parsed: Candle[] = JSON.parse(m5Raw);
+          if (parsed.length > 0) {
+            cachedM5 = parsed;
+            setM5Candles(parsed);
+            setCurrentPrice(parsed[parsed.length - 1].close);
           }
         } catch {}
       }
+
+      // ── Offline signal simulation ─────────────────────────────────────────
+      const lastOnlineMs = lastOnlineRaw ? parseInt(lastOnlineRaw, 10) : 0;
+      const offlineDurationMs = lastOnlineMs > 0 ? startupTime - lastOnlineMs : 0;
+
+      if (offlineDurationMs > 10 * 60 * 1000 && cachedM15.length > 0 && cachedM5.length > 0) {
+        console.log(`[TradingContext] Offline for ${Math.round(offlineDurationMs / 60000)} min — running simulation`);
+        const keyCopy = new Set(savedSignalKeys.current);
+        const simSignals = simulateOfflineSignals(cachedM15, cachedM5, offlineDurationMs, bal, keyCopy);
+
+        if (simSignals.length > 0) {
+          console.log(`[TradingContext] Simulation generated ${simSignals.length} signals`);
+          simSignals.forEach((s) => savedSignalKeys.current.add(s.id));
+          setSignalHistory((prev) => {
+            const next = [...simSignals, ...prev];
+            AsyncStorage.setItem(STORAGE_KEY_SIGNALS, JSON.stringify(next)).catch(() => {});
+            return next;
+          });
+        }
+      }
+
+      // Save current time as last online timestamp
+      AsyncStorage.setItem(STORAGE_KEY_LAST_ONLINE, String(startupTime)).catch(() => {});
+    }).catch(() => {
+      // Fallback: still save last online time
+      AsyncStorage.setItem(STORAGE_KEY_LAST_ONLINE, String(startupTime)).catch(() => {});
     });
 
     // Request notification permission + register push token dengan backend
@@ -623,6 +843,8 @@ export function TradingProvider({ children }: { children: ReactNode }) {
 
     ws.onopen = () => {
       setConnectionStatus("connected");
+      // Update last-online timestamp whenever WS successfully connects
+      AsyncStorage.setItem(STORAGE_KEY_LAST_ONLINE, String(Date.now())).catch(() => {});
 
       // Subscribe M15 — structure
       ws.send(JSON.stringify({

@@ -469,13 +469,14 @@ export function FibChart() {
           })}
 
           {/* ── Signal candle highlight + BUY/SELL badge ── */}
-          {currentSignal && (() => {
-            const idx = visibleCandles.findIndex((c) => c.epoch === currentSignal.signalCandleEpoch);
-            const signalIsBull = currentSignal.trend === "Bullish";
+          {(currentSignal || activeSignal) && (() => {
+            const sig = currentSignal ?? activeSignal!;
+            const idx = visibleCandles.findIndex((c) => c.epoch === sig.signalCandleEpoch);
+            const signalIsBull = sig.trend === "Bullish";
             const col = signalIsBull ? C.green : C.red;
             const colGlow = signalIsBull ? "#22C55E" : "#EF4444";
             const badgeLabel = signalIsBull ? "▲ BUY" : "▼ SELL";
-            const confirmLabel = currentSignal.confirmationType === "rejection" ? "Pin Bar" : "Engulfing";
+            const confirmLabel = sig.confirmationType === "rejection" ? "Pin Bar" : "Engulfing";
 
             // If the signal candle is in view, highlight it
             const refCandle = idx >= 0 ? visibleCandles[idx] : null;
@@ -486,7 +487,7 @@ export function FibChart() {
             const lx = Math.min(Math.max(cx - bW / 2, 2), plotW - bW - 4);
 
             if (signalIsBull) {
-              const candleTopY = refCandle ? priceToY(refCandle.high, lo, hi, plotH) : priceToY(currentSignal.entryPrice, lo, hi, plotH);
+              const candleTopY = refCandle ? priceToY(refCandle.high, lo, hi, plotH) : priceToY(sig.entryPrice, lo, hi, plotH);
               const candleBotY = refCandle ? priceToY(refCandle.low, lo, hi, plotH) : candleTopY + 20;
               const tipY = candleTopY - 3;
               const labelY = Math.max(TOP_PAD + 2, tipY - bH - 8);
@@ -518,7 +519,7 @@ export function FibChart() {
                 </G>
               );
             } else {
-              const candleTopY = refCandle ? priceToY(refCandle.high, lo, hi, plotH) : priceToY(currentSignal.entryPrice, lo, hi, plotH);
+              const candleTopY = refCandle ? priceToY(refCandle.high, lo, hi, plotH) : priceToY(sig.entryPrice, lo, hi, plotH);
               const candleBotY = refCandle ? priceToY(refCandle.low, lo, hi, plotH) : candleTopY + 20;
               const tipY = candleBotY + 3;
               const labelY = Math.min(tipY + 8, TOP_PAD + plotH - bH - 2);
@@ -553,44 +554,47 @@ export function FibChart() {
           })()}
 
           {/* ── Signal levels (Entry / SL / TP1 / TP2) ── */}
-          {currentSignal && (
-            <>
-              <FibLine
-                pct="ENTRY"
-                desc={currentSignal.trend === "Bullish" ? "BUY" : "SELL"}
-                price={currentSignal.entryPrice}
-                color="#FACC15"
-                lo={lo} hi={hi} plotH={plotH} plotW={plotW}
-                dashed={false} strokeWidth={2.5}
-              />
-              <FibLine
-                pct="SL"
-                desc="Stop Loss"
-                price={currentSignal.stopLoss}
-                color="#EF4444"
-                lo={lo} hi={hi} plotH={plotH} plotW={plotW}
-                dashed strokeWidth={2}
-              />
-              <FibLine
-                pct="TP1"
-                desc="Scalp Target"
-                price={currentSignal.takeProfit}
-                color="#22C55E"
-                lo={lo} hi={hi} plotH={plotH} plotW={plotW}
-                dashed strokeWidth={2}
-              />
-              {currentSignal.takeProfit2 && (
+          {(currentSignal || activeSignal) && (() => {
+            const lvl = currentSignal ?? activeSignal!;
+            return (
+              <>
                 <FibLine
-                  pct="TP2"
-                  desc="Full Target"
-                  price={currentSignal.takeProfit2}
-                  color="#4ade80"
+                  pct="ENTRY"
+                  desc={lvl.trend === "Bullish" ? "BUY" : "SELL"}
+                  price={lvl.entryPrice}
+                  color="#FACC15"
                   lo={lo} hi={hi} plotH={plotH} plotW={plotW}
-                  dashed strokeWidth={1.5}
+                  dashed={false} strokeWidth={2.5}
                 />
-              )}
-            </>
-          )}
+                <FibLine
+                  pct="SL"
+                  desc="Stop Loss"
+                  price={lvl.stopLoss}
+                  color="#EF4444"
+                  lo={lo} hi={hi} plotH={plotH} plotW={plotW}
+                  dashed strokeWidth={2}
+                />
+                <FibLine
+                  pct="TP1"
+                  desc="Scalp Target"
+                  price={lvl.takeProfit}
+                  color="#22C55E"
+                  lo={lo} hi={hi} plotH={plotH} plotW={plotW}
+                  dashed strokeWidth={2}
+                />
+                {lvl.takeProfit2 && (
+                  <FibLine
+                    pct="TP2"
+                    desc="Full Target"
+                    price={lvl.takeProfit2}
+                    color="#4ade80"
+                    lo={lo} hi={hi} plotH={plotH} plotW={plotW}
+                    dashed strokeWidth={1.5}
+                  />
+                )}
+              </>
+            );
+          })()}
 
           {/* ── Live price ticker ── */}
           {currentPrice !== null && (() => {

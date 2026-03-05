@@ -4,6 +4,9 @@
 A professional mobile trading analysis app built with Expo (React Native) that performs real-time Fibonacci retracement analysis on XAUUSD (Gold/USD) using live data from Deriv WebSocket. All trading decisions are purely mathematical — no random, no visual assumptions.
 
 ## Recent Changes (2026-03-05)
+- **AI fixed — 60s timeout + retry**: `callPollinationsAI` now uses 60s timeout (was 35s) and retries once on HTTP error, empty content, or parse failure. Added `User-Agent` + `Accept` headers to prevent Cloudflare 502 errors. Falls back to `reasoning_content` if `content` field is empty.
+- **BUY/SELL badge always visible**: Chart now shows badge for `activeSignal` as a fallback when `currentSignal` is null (e.g. during cooldown). Entry/SL/TP lines also persist via `activeSignal`.
+- **Offline signal generation**: On app startup, if device was offline for >10 minutes, the app simulates the missing candles using a seeded random walk (LCG + Box-Muller, based on historical ATR). Full Fibonacci+EMA signal detection runs on the simulated data, and TP/SL outcomes are determined. Signals are saved to history with win/lose status. Key: `fibo_last_online_v1`.
 - **AI Chat input bar fixed**: Was hidden behind the absolute-positioned tab bar. Fixed by adding explicit `paddingBottom = tabBarHeight + insets.bottom` to the root View.
 - **Hint chips made tappable**: EmptyState hint chips now use `Pressable` — tapping fills the TextInput and focuses keyboard.
 - **TP calculation made realistic for scalping**: Formula now uses `floor = max(m5ATR × 2.0, 8pts)` and `cap = max(m5ATR × 4.0, 20pts)`. Fibonacci extension used as target if it falls in range. Applied in both frontend (`TradingContext.tsx`) and backend (`derivService.ts`).

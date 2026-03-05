@@ -1,8 +1,8 @@
 import https from "https";
 import type { TradingSignal, MarketStateSnapshot } from "./derivService";
 
-const AI_API_URL = "text.pollinations.ai";
-const AI_API_PATH = "/v1/chat/completions";
+const AI_HOSTNAME = "text.pollinations.ai";
+const AI_PATH = "/v1/chat/completions";
 
 export interface AIMessage {
   id: string;
@@ -74,65 +74,103 @@ Kamu boleh mengingat dan merujuk percakapan sebelumnya dalam sesi ini.
 FORMAT RESPONS WAJIB:
 Tulis dalam teks biasa saja. Jangan gunakan markdown, jangan pakai bintang, jangan pakai tanda pagar, jangan pakai garis bawah, jangan pakai backtick, jangan pakai dash sebagai bullet. Gunakan kalimat biasa yang mengalir. Boleh gunakan angka 1, 2, 3 jika perlu urutan. Maksimal 150 kata untuk rekomendasi sinyal.`;
 
-// ─── Call AI API (non-streaming) ───────────────────────────────────────────────
-async function callPollinationsAI(
-  messages: Array<{ role: string; content: string }>
+// ─── Call AI API (https native, with retry) ───────────────────────────────────
+function callPollinationsAI(
+  messages: Array<{ role: string; content: string }>,
+  attempt = 0
 ): Promise<string> {
   const payload = JSON.stringify({
     model: "openai",
+    stream: false,
     messages: [{ role: "system", content: SYSTEM_PROMPT }, ...messages],
   });
 
   return new Promise((resolve) => {
     const req = https.request(
       {
-        hostname: AI_API_URL,
-        path: AI_API_PATH,
+        hostname: AI_HOSTNAME,
+        path: AI_PATH,
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           "Content-Length": Buffer.byteLength(payload),
+          "User-Agent": "Mozilla/5.0 LIBARTIN-Trading-App",
+          "Accept": "application/json",
         },
       },
       (res) => {
         let raw = "";
         res.on("data", (chunk) => { raw += chunk; });
-        res.on("end", () => {
+        res.on("end", async () => {
+          const status = res.statusCode ?? 0;
+          if (status >= 400) {
+            console.error(`[AIService] HTTP ${status}: ${raw.slice(0, 200)}`);
+            if (attempt === 0) {
+              console.log("[AIService] Retrying after HTTP error...");
+              await new Promise((r) => setTimeout(r, 3000));
+              resolve(callPollinationsAI(messages, 1));
+            } else {
+              resolve("");
+            }
+            return;
+          }
           try {
-            const result = JSON.parse(raw);
-            const content = result?.choices?.[0]?.message?.content ?? "";
+            const result = JSON.parse(raw) as {
+              choices?: Array<{ message?: { content?: string; reasoning_content?: string } }>;
+            };
+            const msg = result?.choices?.[0]?.message;
+            const content = msg?.content ?? msg?.reasoning_content ?? "";
+            if (!content && attempt === 0) {
+              console.warn("[AIService] Empty content, retrying...");
+              await new Promise((r) => setTimeout(r, 2000));
+              resolve(callPollinationsAI(messages, 1));
+              return;
+            }
             resolve(stripMarkdown(content.trim()));
-          } catch {
+          } catch (parseErr) {
             console.error("[AIService] Parse error:", raw.slice(0, 200));
-            resolve("");
+            if (attempt === 0) {
+              await new Promise((r) => setTimeout(r, 2000));
+              resolve(callPollinationsAI(messages, 1));
+            } else {
+              resolve("");
+            }
           }
         });
       }
     );
-    req.on("error", (e) => {
+
+    req.on("error", async (e) => {
       console.error("[AIService] Request error:", e.message);
-      resolve("");
+      if (attempt === 0) {
+        await new Promise((r) => setTimeout(r, 3000));
+        resolve(callPollinationsAI(messages, 1));
+      } else {
+        resolve("");
+      }
     });
-    req.setTimeout(35000, () => {
-      console.error("[AIService] Request timeout");
+
+    req.setTimeout(60000, () => {
+      console.error("[AIService] Request timeout (60s)");
       req.destroy();
-      resolve("");
+      if (attempt === 0) {
+        callPollinationsAI(messages, 1).then(resolve);
+      } else {
+        resolve("");
+      }
     });
+
     req.write(payload);
     req.end();
   });
 }
 
 // ─── Server-side word streaming (simulate streaming from full response) ──────────
-// Pollinations reasoning models output internal thinking (reasoning_content) before
-// actual content. To avoid streaming raw reasoning, we get the full response first
-// and then stream it word-by-word for a clean typewriter experience.
 function streamWordByWord(
   text: string,
   onChunk: (chunk: string) => void,
   onDone: () => void
 ): void {
-  // Split into words+spaces, stream 2-3 chars at a time for natural feel
   const tokens: string[] = [];
   const re = /(\S+\s*)/g;
   let m: RegExpExecArray | null;
@@ -144,7 +182,6 @@ function streamWordByWord(
   }
 
   let i = 0;
-  // Dynamic interval: faster for short responses, target ~30-40 words/sec
   const ms = Math.max(25, Math.min(80, Math.floor(2000 / tokens.length)));
 
   const iv = setInterval(() => {
@@ -355,7 +392,7 @@ class AIService {
     console.log(`[AIService] Outcome commentary done`);
   }
 
-  // ─── User Chat (non-streaming, for /api/ai/chat) ───────────────────────────
+  // ─── User Chat (non-streaming) ─────────────────────────────────────────────
   async chat(
     userMessage: string,
     snapshot: MarketStateSnapshot
@@ -398,8 +435,6 @@ class AIService {
   }
 
   // ─── User Chat Streaming ───────────────────────────────────────────────────
-  // Strategy: get full response from Pollinations (non-streaming, avoids reasoning_content noise),
-  // then stream the clean text word-by-word to the client for a typewriter effect.
   chatStream(
     userMessage: string,
     snapshot: MarketStateSnapshot,
@@ -427,7 +462,6 @@ class AIService {
       messages.push({ role: "user", content: userMessage });
     }
 
-    // Get full response first (clean, no reasoning_content noise)
     callPollinationsAI(messages).then((fullResponse) => {
       const clean = fullResponse.trim() || "Maaf, AI tidak dapat merespons saat ini.";
 
@@ -436,7 +470,6 @@ class AIService {
       this.addDisplayMessage({ role: "user", content: userMessage, type: "user_chat" });
       this.addDisplayMessage({ role: "assistant", content: clean, type: "user_chat" });
 
-      // Stream word by word to give typewriter feel
       streamWordByWord(clean, onChunk, () => onDone(clean));
     }).catch((err: Error) => {
       onError(err.message || "AI error");

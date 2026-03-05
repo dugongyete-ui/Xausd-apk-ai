@@ -30,8 +30,12 @@ if (Platform.OS !== "web") {
 }
 
 // Backend URL — server yang jalan 24/7 untuk kirim push ke device
-// Strip ":5000" karena Replit proxy HTTPS bekerja di port 443
+// On web browser, use current page origin — works in dev preview AND published.
+// On native (Expo Go / APK), fall back to EXPO_PUBLIC_DOMAIN.
 const BACKEND_URL = (() => {
+  if (typeof window !== "undefined" && window.location?.origin) {
+    return window.location.origin;
+  }
   if (typeof process !== "undefined" && process.env.EXPO_PUBLIC_DOMAIN) {
     const domain = process.env.EXPO_PUBLIC_DOMAIN;
     if (domain.startsWith("http")) return domain;

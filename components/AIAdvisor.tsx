@@ -29,10 +29,12 @@ interface AIMessage {
 }
 
 function getBackendUrl(): string {
+  if (typeof window !== "undefined" && window.location?.origin) {
+    return window.location.origin;
+  }
   if (typeof process !== "undefined" && process.env.EXPO_PUBLIC_DOMAIN) {
     const domain = process.env.EXPO_PUBLIC_DOMAIN;
     if (domain.startsWith("http")) return domain;
-    // Replit proxy: strip ":5000" port karena HTTPS sudah di-proxy ke port 443
     const cleanDomain = domain.replace(/:5000$/, "");
     return `https://${cleanDomain}`;
   }

@@ -21,7 +21,13 @@ import { Ionicons } from "@expo/vector-icons";
 import C from "@/constants/colors";
 
 // ─── Backend URL ───────────────────────────────────────────────────────────────
+// On web browser, always use the current page origin so API calls work
+// whether in dev preview or published (avoids wrong domain issues).
+// On native (Expo Go / APK), use EXPO_PUBLIC_DOMAIN.
 function getBackendUrl(): string {
+  if (typeof window !== "undefined" && window.location?.origin) {
+    return window.location.origin;
+  }
   const domain = process.env.EXPO_PUBLIC_DOMAIN ?? "";
   if (!domain) return "";
   if (domain.startsWith("http")) return domain;

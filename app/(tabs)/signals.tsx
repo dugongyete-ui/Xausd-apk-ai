@@ -257,7 +257,7 @@ function SignalItem({ signal }: { signal: TradingSignal }) {
         </View>
         <View style={styles.rrContainer}>
           <Text style={styles.rrSmallLabel}>R:R</Text>
-          <Text style={styles.rrSmallValue}>1:{signal.riskReward}</Text>
+          <Text style={styles.rrSmallValue}>1:{signal.riskReward2 ?? signal.riskReward}</Text>
         </View>
       </View>
 
@@ -277,11 +277,22 @@ function SignalItem({ signal }: { signal: TradingSignal }) {
         </View>
         <View style={styles.priceDivider} />
         <View style={styles.priceBlock}>
-          <Text style={styles.priceBlockLabel}>TP</Text>
+          <Text style={styles.priceBlockLabel}>TP1</Text>
           <Text style={[styles.priceBlockValue, { color: C.green }]}>
             {signal.takeProfit.toFixed(2)}
           </Text>
         </View>
+        {signal.takeProfit2 && (
+          <>
+            <View style={styles.priceDivider} />
+            <View style={styles.priceBlock}>
+              <Text style={styles.priceBlockLabel}>TP2</Text>
+              <Text style={[styles.priceBlockValue, { color: "#4ade80" }]}>
+                {signal.takeProfit2.toFixed(2)}
+              </Text>
+            </View>
+          </>
+        )}
         <View style={styles.priceDivider} />
         <View style={styles.priceBlock}>
           <Text style={styles.priceBlockLabel}>LOT</Text>

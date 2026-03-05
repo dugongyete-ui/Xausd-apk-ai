@@ -404,18 +404,26 @@ export default function AIScreen() {
         body: JSON.stringify({ message: text }),
       });
 
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const contentType = res.headers.get("content-type") ?? "";
+      if (!contentType.includes("application/json")) {
+        throw new Error("Server tidak merespons dengan benar. Coba lagi.");
+      }
 
       const data = await res.json() as { response?: string; error?: string };
+
+      if (!res.ok) {
+        throw new Error(data.error || `HTTP ${res.status}`);
+      }
+
       const reply = data.response?.trim() || "Maaf, AI tidak dapat merespons saat ini.";
 
       animateWordByWord(msgId, reply, () => setIsStreaming(false));
     } catch (err: unknown) {
-      const errMsg = err instanceof Error ? err.message : "Terjadi kesalahan.";
+      const errMsg = err instanceof Error ? err.message : "Terjadi kesalahan koneksi.";
       setMessages((prev) =>
         prev.map((m) =>
           m.id === msgId
-            ? { ...m, content: `Gagal menghubungi AI: ${errMsg}`, streaming: false }
+            ? { ...m, content: errMsg, streaming: false }
             : m
         )
       );

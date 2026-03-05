@@ -48,12 +48,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
       ? snapshot.trend
       : "Bearish";
     const sl = fib ? (trend === "Bearish" ? fib.swingHigh : fib.swingLow) : price + (trend === "Bearish" ? 15 : -15);
-    const tp = fib ? fib.extensionNeg27 : price - (trend === "Bearish" ? 20 : -20);
     const slDist = Math.abs(price - sl);
-    const tpDist = Math.abs(tp - price);
-    const rr = slDist > 0 ? Math.round((tpDist / slDist) * 100) / 100 : 1.5;
-    derivService.injectTestSignal({ price, trend, sl, tp, rr });
-    res.json({ ok: true, price, trend, sl, tp, rr, tokens: derivService.getTokenCount() });
+    const tp1Dist = Math.min(slDist * 1.0, 15);
+    const tp1 = trend === "Bearish" ? price - tp1Dist : price + tp1Dist;
+    const extDist = fib ? Math.abs(fib.extensionNeg27 - price) : slDist * 1.8;
+    const tp2Dist = Math.min(Math.max(extDist, slDist * 1.8, 10), 28);
+    const tp2 = trend === "Bearish" ? price - tp2Dist : price + tp2Dist;
+    const rr1 = slDist > 0 ? Math.round((tp1Dist / slDist) * 100) / 100 : 1.0;
+    const rr2 = slDist > 0 ? Math.round((tp2Dist / slDist) * 100) / 100 : 1.8;
+    derivService.injectTestSignal({ price, trend, sl, tp: tp1, tp2, rr: rr1, rr2 });
+    res.json({ ok: true, price, trend, sl, tp1, tp2, rr1, rr2, tokens: derivService.getTokenCount() });
   });
 
   // ─── AI Endpoints ──────────────────────────────────────────────────────────
@@ -66,18 +70,23 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   // POST /api/ai/chat — User sends a question to AI
   app.post("/api/ai/chat", async (req: Request, res: Response) => {
-    const { message } = req.body as { message?: string };
-    if (!message || message.trim().length === 0) {
-      res.status(400).json({ error: "Message required" });
-      return;
+    try {
+      const { message } = req.body as { message?: string };
+      if (!message || message.trim().length === 0) {
+        res.status(400).json({ error: "Message required" });
+        return;
+      }
+      if (message.trim().length > 500) {
+        res.status(400).json({ error: "Pesan terlalu panjang (maks 500 karakter)" });
+        return;
+      }
+      const snapshot = derivService.getSnapshot();
+      const response = await aiService.chat(message.trim(), snapshot);
+      res.json({ response, messages: aiService.getMessages(20) });
+    } catch (e) {
+      console.error("[Routes] Chat error:", e);
+      res.status(500).json({ error: "AI sedang tidak tersedia. Coba lagi sebentar." });
     }
-    if (message.trim().length > 500) {
-      res.status(400).json({ error: "Pesan terlalu panjang (maks 500 karakter)" });
-      return;
-    }
-    const snapshot = derivService.getSnapshot();
-    const response = await aiService.chat(message.trim(), snapshot);
-    res.json({ response, messages: aiService.getMessages(20) });
   });
 
   // POST /api/ai/stream — Streaming chat via Server-Sent Events

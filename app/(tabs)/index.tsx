@@ -525,11 +525,20 @@ function SignalCard() {
           </View>
           <View style={styles.signalLevel}>
             <View style={[styles.levelDot, { backgroundColor: C.green }]} />
-            <Text style={styles.levelKey}>TP</Text>
+            <Text style={styles.levelKey}>TP1</Text>
             <Text style={[styles.levelVal, { color: C.green }]}>
               {activeSignal.takeProfit.toFixed(2)}
             </Text>
           </View>
+          {activeSignal.takeProfit2 && (
+            <View style={styles.signalLevel}>
+              <View style={[styles.levelDot, { backgroundColor: "#4ade80" }]} />
+              <Text style={styles.levelKey}>TP2</Text>
+              <Text style={[styles.levelVal, { color: "#4ade80" }]}>
+                {activeSignal.takeProfit2.toFixed(2)}
+              </Text>
+            </View>
+          )}
           <View style={styles.signalLevel}>
             <View style={[styles.levelDot, { backgroundColor: C.blue }]} />
             <Text style={styles.levelKey}>LOT</Text>

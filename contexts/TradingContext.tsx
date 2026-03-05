@@ -97,7 +97,9 @@ export interface TradingSignal {
   entryPrice: number;
   stopLoss: number;
   takeProfit: number;
+  takeProfit2?: number;
   riskReward: number;
+  riskReward2?: number;
   lotSize: number;
   timestampUTC: string;
   fibLevels: FibLevels;
@@ -966,21 +968,23 @@ export function TradingProvider({ children }: { children: ReactNode }) {
     const slDistance = Math.abs(currentPrice - sl);
     if (slDistance < atr * 0.1 || atr < 0.1) return null;
 
-    // TP realistis scalping XAUUSD M5:
-    // - Minimum RR 1:1.5 dari SL distance (scalping discipline)
-    // - Fibonacci extension digunakan jika lebih jauh dari minimum RR
-    // - Cap 60 pts dari entry agar tetap realistis untuk scalping
+    // TP1 (scalping cepat): 1:1 RR dari SL, maks 15 pts — exit cepat sebelum pullback
+    const tp1Dist = Math.min(slDistance * 1.0, 15);
+    const tp1 = trendDir === "Bearish"
+      ? currentPrice - tp1Dist
+      : currentPrice + tp1Dist;
+
+    // TP2 (full target): Fibonacci extension atau 1.8:1 RR, cap 28 pts untuk scalping realistis
     const extDist = Math.abs(fibLevels.extensionNeg27 - currentPrice);
-    const minRRDist = slDistance * 1.5;
-    const atpDist = Math.min(Math.max(extDist, minRRDist, 10), 60);
-    const tp = trendDir === "Bearish"
-      ? currentPrice - atpDist
-      : currentPrice + atpDist;
+    const tp2Dist = Math.min(Math.max(extDist, slDistance * 1.8, 10), 28);
+    const tp2 = trendDir === "Bearish"
+      ? currentPrice - tp2Dist
+      : currentPrice + tp2Dist;
 
     const riskAmount = balance * 0.01;
     const lotSize = riskAmount / slDistance;
-    const tpDistance = Math.abs(tp - currentPrice);
-    const riskReward = tpDistance / slDistance;
+    const rr1 = tp1Dist / slDistance;
+    const rr2 = tp2Dist / slDistance;
 
     const nowMs = Date.now();
     const sigKey = makeSignalKey(currentPrice, trend, nowMs);
@@ -992,8 +996,10 @@ export function TradingProvider({ children }: { children: ReactNode }) {
       trend: trendDir,
       entryPrice: currentPrice,
       stopLoss: sl,
-      takeProfit: tp,
-      riskReward: Math.round(riskReward * 100) / 100,
+      takeProfit: tp1,
+      takeProfit2: tp2,
+      riskReward: Math.round(rr1 * 100) / 100,
+      riskReward2: Math.round(rr2 * 100) / 100,
       lotSize: Math.round(lotSize * 100) / 100,
       timestampUTC: new Date(nowMs).toUTCString(),
       fibLevels,
@@ -1133,6 +1139,11 @@ export function TradingProvider({ children }: { children: ReactNode }) {
       level786: isBuy ? swingLow + (swingHigh - swingLow) * 0.214 : swingLow + (swingHigh - swingLow) * 0.786,
       extensionNeg27: tp,
     };
+    const slDist = Math.abs(price - sl);
+    const tp1Demo = isBuy ? price + Math.min(slDist * 1.0, 15) : price - Math.min(slDist * 1.0, 15);
+    const tp2Demo = tp;
+    const rr1Demo = parseFloat((Math.abs(tp1Demo - price) / slDist).toFixed(2));
+    const rr2Demo = parseFloat((Math.abs(tp2Demo - price) / slDist).toFixed(2));
     const demoId = `demo-${Date.now()}`;
     const demo: TradingSignal = {
       id: demoId,
@@ -1141,8 +1152,10 @@ export function TradingProvider({ children }: { children: ReactNode }) {
       trend: isBuy ? "Bullish" : "Bearish",
       entryPrice: price,
       stopLoss: sl,
-      takeProfit: tp,
-      riskReward: rr,
+      takeProfit: tp1Demo,
+      takeProfit2: tp2Demo,
+      riskReward: rr1Demo,
+      riskReward2: rr2Demo,
       lotSize: 0.01,
       timestampUTC: new Date().toUTCString(),
       fibLevels: mockFib,

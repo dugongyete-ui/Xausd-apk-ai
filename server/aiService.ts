@@ -60,7 +60,8 @@ EMA M5: EMA20 sebagai momentum cepat, EMA50 sebagai filter trend intraday. Sinya
 Fibonacci: Anchor adalah fractal 5-bar tertua. Golden Zone adalah 61.8 persen sampai 78.6 persen retracement.
 Konfirmasi entry M5: Pin Bar (Rejection) atau Engulfing di dalam zona Fibonacci.
 Stop Loss: Swing Low untuk Bullish, Swing High untuk Bearish.
-Take Profit: Minimum Risk Reward 1:1.5 dari jarak SL, atau Fibonacci extension minus 27 persen jika lebih jauh. Maksimal 60 poin dari entry untuk scalping.
+Take Profit 1 (TP1): Scalping cepat 1:1 RR dari SL, maksimal 15 poin dari entry. Exit di sini untuk amankan profit.
+Take Profit 2 (TP2): Target penuh Fibonacci extension minus 27 persen atau 1.8:1 RR, cap 28 poin dari entry. Lebih jauh namun lebih optimal.
 Single Position Rule: Hanya 1 sinyal per anchor fractal.
 
 ATURAN KETAT:
@@ -193,8 +194,8 @@ function buildMarketContext(snapshot: MarketStateSnapshot): string {
       `Arah: ${sig.trend === "Bullish" ? "BUY" : "SELL"}`,
       `Entry: ${sig.entryPrice.toFixed(2)}`,
       `Stop Loss: ${sig.stopLoss.toFixed(2)}`,
-      `Take Profit: ${sig.takeProfit.toFixed(2)}`,
-      `Risk Reward: 1 banding ${sig.riskReward}`,
+      `TP1 (scalping): ${sig.takeProfit.toFixed(2)} — RR 1:${sig.riskReward}`,
+      ...(sig.takeProfit2 ? [`TP2 (full): ${sig.takeProfit2.toFixed(2)} — RR 1:${sig.riskReward2}`] : []),
       `Konfirmasi: ${sig.confirmationType === "engulfing" ? "Engulfing M5" : "Pin Bar Rejection M5"}`,
       `Waktu Sinyal: ${sig.timestampUTC}`
     );
@@ -259,13 +260,17 @@ class AIService {
       signal.confirmationType === "engulfing" ? "Engulfing M5" : "Pin Bar Rejection M5";
 
     const marketCtx = buildMarketContext(snapshot);
+    const tp2Info = signal.takeProfit2
+      ? ` | TP2: ${signal.takeProfit2.toFixed(2)} (RR 1:${signal.riskReward2})`
+      : "";
     const userMsg =
       `${marketCtx}\n\n` +
       `SINYAL BARU TERDETEKSI: ${direction} XAUUSD\n` +
-      `Entry: ${signal.entryPrice.toFixed(2)} | SL: ${signal.stopLoss.toFixed(2)} | TP: ${signal.takeProfit.toFixed(2)} | RR 1:${signal.riskReward}\n` +
+      `Entry: ${signal.entryPrice.toFixed(2)} | SL: ${signal.stopLoss.toFixed(2)}\n` +
+      `TP1: ${signal.takeProfit.toFixed(2)} (RR 1:${signal.riskReward})${tp2Info}\n` +
       `Konfirmasi: ${confirmLabel}\n\n` +
       `Berikan analisis singkat dan rekomendasi untuk sinyal ini. Jelaskan alasan teknikal berdasarkan data di atas. ` +
-      `Sebutkan level Entry, SL, dan TP. Ingatkan bahwa ini sinyal teknikal bukan jaminan profit. Tulis dalam teks biasa tanpa format apapun.`;
+      `Sebutkan level Entry, SL, TP1 (scalping cepat), dan TP2 (full target). Ingatkan bahwa ini sinyal teknikal bukan jaminan profit. Tulis dalam teks biasa tanpa format apapun.`;
 
     console.log(`[AIService] Generating signal recommendation: ${direction} @ ${signal.entryPrice}`);
 

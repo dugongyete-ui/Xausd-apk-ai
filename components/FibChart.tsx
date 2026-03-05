@@ -211,6 +211,11 @@ export function FibChart() {
       hiV = Math.max(hiV, sigTP);
       loV = Math.min(loV, sigTP);
     }
+    const sigTP2 = currentSignal?.takeProfit2 ?? activeSignal?.takeProfit2;
+    if (sigTP2 !== undefined) {
+      hiV = Math.max(hiV, sigTP2);
+      loV = Math.min(loV, sigTP2);
+    }
     const pad = (hiV - loV) * 0.05;
     return { lo: loV - pad, hi: hiV + pad };
   }, [visibleCandles, currentPrice, fibLevels, currentSignal, activeSignal]);
@@ -547,7 +552,7 @@ export function FibChart() {
             }
           })()}
 
-          {/* ── Signal levels (Entry / SL / TP) ── */}
+          {/* ── Signal levels (Entry / SL / TP1 / TP2) ── */}
           {currentSignal && (
             <>
               <FibLine
@@ -567,13 +572,23 @@ export function FibChart() {
                 dashed strokeWidth={2}
               />
               <FibLine
-                pct="TP"
-                desc="Take Profit"
+                pct="TP1"
+                desc="Scalp Target"
                 price={currentSignal.takeProfit}
                 color="#22C55E"
                 lo={lo} hi={hi} plotH={plotH} plotW={plotW}
                 dashed strokeWidth={2}
               />
+              {currentSignal.takeProfit2 && (
+                <FibLine
+                  pct="TP2"
+                  desc="Full Target"
+                  price={currentSignal.takeProfit2}
+                  color="#4ade80"
+                  lo={lo} hi={hi} plotH={plotH} plotW={plotW}
+                  dashed strokeWidth={1.5}
+                />
+              )}
             </>
           )}
 
@@ -602,7 +617,8 @@ export function FibChart() {
         <LegItem color={SWING_COLOR} label="Swing" line />
         <LegItem color={ZONE618_COLOR} label="61.8%" box />
         <LegItem color={ZONE786_COLOR} label="78.6%" box />
-        <LegItem color={TP_COLOR} label="TP" />
+        <LegItem color={TP_COLOR} label="TP1" />
+        <LegItem color="#4ade80" label="TP2" />
         <LegItem color={SL_COLOR} label="SL" />
         {selectedTF === "M15" ? (
           <>

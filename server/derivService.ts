@@ -93,7 +93,9 @@ export interface TradingSignal {
   entryPrice: number;
   stopLoss: number;
   takeProfit: number;
+  takeProfit2?: number;
   riskReward: number;
+  riskReward2?: number;
   timestampUTC: string;
   fibLevels: FibLevels;
   confirmationType: "rejection" | "engulfing";
@@ -725,20 +727,21 @@ class DerivService {
       return;
     }
 
-    // TP realistis scalping XAUUSD M5:
-    // - Floor: max(m5ATR × 2.0, 8 pts) agar tidak terlalu kecil
-    // - Cap:   max(m5ATR × 4.0, 20 pts) agar tidak terlalu jauh untuk scalping
-    // - Fibonacci extension dipakai jika jatuh dalam range tsb
-    const extDist = Math.abs(fib.extensionNeg27 - this.currentPrice);
-    const tpFloor = Math.max(m5ATR * 2.0, 8);
-    const tpCap   = Math.max(m5ATR * 4.0, 20);
-    const atpDist = Math.min(Math.max(extDist, tpFloor), tpCap);
-    const tp = trend === "Bearish"
-      ? this.currentPrice - atpDist
-      : this.currentPrice + atpDist;
+    // TP1 (scalping cepat): 1:1 RR dari SL, maks 15 pts — exit cepat sebelum pullback
+    const tp1Dist = Math.min(slDistance * 1.0, 15);
+    const tp1 = trend === "Bearish"
+      ? this.currentPrice - tp1Dist
+      : this.currentPrice + tp1Dist;
 
-    const tpDistance = Math.abs(tp - this.currentPrice);
-    const riskReward = Math.round((tpDistance / slDistance) * 100) / 100;
+    // TP2 (full target): Fibonacci extension atau 1.8:1 RR, cap 28 pts untuk scalping realistis
+    const extDist = Math.abs(fib.extensionNeg27 - this.currentPrice);
+    const tp2Dist = Math.min(Math.max(extDist, slDistance * 1.8, 10), 28);
+    const tp2 = trend === "Bearish"
+      ? this.currentPrice - tp2Dist
+      : this.currentPrice + tp2Dist;
+
+    const rr1 = Math.round((tp1Dist / slDistance) * 100) / 100;
+    const rr2 = Math.round((tp2Dist / slDistance) * 100) / 100;
 
     const nowMs = Date.now();
     const bucket = Math.floor(nowMs / (5 * 60 * 1000));
@@ -751,8 +754,10 @@ class DerivService {
       trend,
       entryPrice: this.currentPrice,
       stopLoss: sl,
-      takeProfit: tp,
-      riskReward,
+      takeProfit: tp1,
+      takeProfit2: tp2,
+      riskReward: rr1,
+      riskReward2: rr2,
       timestampUTC: new Date(nowMs).toUTCString(),
       fibLevels: fib,
       confirmationType,
@@ -767,7 +772,7 @@ class DerivService {
       this.lastSignaledTimeMs = Date.now();
       this.signalHistory.unshift(signal);
       if (this.signalHistory.length > 100) this.signalHistory.pop();
-      console.log(`[DerivService] NEW SIGNAL: ${trend} @ ${this.currentPrice}, RR: ${riskReward}`);
+      console.log(`[DerivService] NEW SIGNAL: ${trend} @ ${this.currentPrice}, TP1: ${tp1.toFixed(2)}, TP2: ${tp2.toFixed(2)}, RR: ${rr1}/${rr2}`);
 
       // ── Kirim Push Notification ke semua device terdaftar ─────────────────
       const isBull = trend === "Bullish";
@@ -778,8 +783,9 @@ class DerivService {
       const pushTitle = `${dirEmoji} LIBARTIN — SINYAL ${dirLabel} XAUUSD`;
       const pushBody =
         `📍 Entry: ${this.currentPrice!.toFixed(2)}\n` +
-        `🛑 SL: ${sl.toFixed(2)}  |  🎯 TP: ${tp.toFixed(2)}\n` +
-        `📊 R:R 1:${riskReward}  |  ${confirmLabel}`;
+        `🛑 SL: ${sl.toFixed(2)}\n` +
+        `🎯 TP1: ${tp1.toFixed(2)}  |  TP2: ${tp2.toFixed(2)}\n` +
+        `📊 R:R 1:${rr1} / 1:${rr2}  |  ${confirmLabel}`;
 
       const tokens = Array.from(this.pushTokens);
       if (tokens.length > 0) {
@@ -789,8 +795,10 @@ class DerivService {
           signalId: sigId,
           entryPrice: this.currentPrice,
           stopLoss: sl,
-          takeProfit: tp,
-          riskReward,
+          takeProfit: tp1,
+          takeProfit2: tp2,
+          riskReward: rr1,
+          riskReward2: rr2,
         }).catch((e) => console.error("[PushNotif] Error:", e));
       }
 
@@ -862,7 +870,9 @@ class DerivService {
     trend: "Bullish" | "Bearish";
     sl: number;
     tp: number;
+    tp2?: number;
     rr: number;
+    rr2?: number;
   }): void {
     const nowMs = Date.now();
     const bucket = Math.floor(nowMs / (5 * 60 * 1000));
@@ -876,7 +886,9 @@ class DerivService {
       entryPrice: params.price,
       stopLoss: params.sl,
       takeProfit: params.tp,
+      takeProfit2: params.tp2,
       riskReward: params.rr,
+      riskReward2: params.rr2,
       timestampUTC: new Date(nowMs).toUTCString(),
       fibLevels: this.fibLevels ?? {
         swingHigh: params.price + 30,
@@ -893,16 +905,18 @@ class DerivService {
       this.savedSignalKeys.add(sigId);
       this.signalHistory.unshift(signal);
       if (this.signalHistory.length > 100) this.signalHistory.pop();
-      console.log(`[DerivService] TEST SIGNAL injected: ${params.trend} @ ${params.price}`);
+      console.log(`[DerivService] TEST SIGNAL injected: ${params.trend} @ ${params.price} TP1:${params.tp} TP2:${params.tp2}`);
     }
 
     const isBull = params.trend === "Bullish";
     const dirEmoji = isBull ? "🟢" : "🔴";
     const dirLabel = isBull ? "BUY ▲" : "SELL ▼";
     const pushTitle = `${dirEmoji} [TEST] LIBARTIN — SINYAL ${dirLabel} XAUUSD`;
+    const tp2Line = params.tp2 ? `  |  TP2: ${params.tp2.toFixed(2)}` : "";
     const pushBody =
       `📍 Entry: ${params.price.toFixed(2)}\n` +
-      `🛑 SL: ${params.sl.toFixed(2)}  |  🎯 TP: ${params.tp.toFixed(2)}\n` +
+      `🛑 SL: ${params.sl.toFixed(2)}\n` +
+      `🎯 TP1: ${params.tp.toFixed(2)}${tp2Line}\n` +
       `📊 R:R 1:${params.rr}  |  TEST Signal`;
 
     const tokens = Array.from(this.pushTokens);

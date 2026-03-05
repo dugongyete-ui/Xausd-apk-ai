@@ -91,7 +91,14 @@ Ketika HP dibuka kembali, app mengambil signal history dari backend — sudah ad
 - `app/(tabs)/settings.tsx` — Settings tab
 
 ## Recent Changes
-- **2026-03-05**: Sinkronisasi sistem AI:
+- **2026-03-05 v2**: Bi-directional scalping + chart cleanup:
+  - **Hapus -27% Extension (Take Profit)** dari `FibChart.tsx` — label sudah digantikan TP1/TP2 di sinyal aktif
+  - **Bi-directional swing detection**: `findSwings()` di `derivService.ts` dan `TradingContext.tsx` kini mencari impulse wave terbaru di KEDUA arah (bullish & bearish) tanpa syarat EMA alignment. Sistem memilih impulse paling baru berdasarkan anchorEpoch. Ini memungkinkan sinyal BUY bahkan saat EMA M15 masih bearish, selama impulse naik terbaru sudah terbentuk (new L → new H).
+  - **fibTrend state**: Ditambahkan `fibTrend: "Bullish" | "Bearish" | null` ke TradingContext dan FibChart. Chart Fibonacci sekarang mengikuti arah impulse aktual, bukan EMA trend yang lagging.
+  - **Offline simulator** diperbarui untuk pakai `findSwings()` tanpa parameter trend.
+  - **EMA trend badge** (BEARISH/BULLISH di dashboard) tetap berdasarkan EMA50 vs EMA200 M15 untuk referensi trend makro.
+
+- **2026-03-05 v1**: Sinkronisasi sistem AI:
   - Ditambahkan `ema20m5` dan `ema50m5` ke `MarketStateSnapshot` interface di `server/derivService.ts`
   - Ditambahkan `EMA20_PERIOD = 20` konstanta di server
   - `getSnapshot()` kini menghitung EMA20 dan EMA50 dari M5 candles secara real-time

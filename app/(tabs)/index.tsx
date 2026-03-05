@@ -313,7 +313,6 @@ function FibLevelsCard() {
 
   const SWING_COLOR = "#C084FC";
   const ZONE786_COLOR = "#F97316";
-  const TP_COLOR = "#22C55E";
 
   const levels = isBull
     ? [
@@ -341,12 +340,6 @@ function FibLevelsCard() {
           color: C.red,
           pct: "100%",
         },
-        {
-          label: "-27% Extension (Take Profit)",
-          value: fibLevels.extensionNeg27,
-          color: TP_COLOR,
-          pct: "-27%",
-        },
       ]
     : [
         {
@@ -372,12 +365,6 @@ function FibLevelsCard() {
           value: fibLevels.swingHigh,
           color: C.red,
           pct: "100%",
-        },
-        {
-          label: "-27% Extension (Take Profit)",
-          value: fibLevels.extensionNeg27,
-          color: TP_COLOR,
-          pct: "-27%",
         },
       ];
 

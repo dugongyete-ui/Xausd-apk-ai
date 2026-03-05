@@ -112,7 +112,7 @@ function calcFloatingPnL(trend: "Bullish" | "Bearish", entryPrice: number, curre
 }
 
 export function FibChart() {
-  const { candles, m15Candles, fibLevels, currentPrice, currentSignal, activeSignal, trend, atr } = useTrading();
+  const { candles, m15Candles, fibLevels, fibTrend, currentPrice, currentSignal, activeSignal, trend, atr } = useTrading();
   const [chartW, setChartW] = useState(0);
   const [selectedTF, setSelectedTF] = useState<TF>("M15");
   const visibleCount = VISIBLE[selectedTF];
@@ -203,8 +203,6 @@ export function FibChart() {
     if (fibLevels) {
       hiV = Math.max(hiV, fibLevels.swingHigh);
       loV = Math.min(loV, fibLevels.swingLow);
-      hiV = Math.max(hiV, fibLevels.extensionNeg27);
-      loV = Math.min(loV, fibLevels.extensionNeg27);
     }
     const sigTP = currentSignal?.takeProfit ?? activeSignal?.takeProfit;
     if (sigTP !== undefined) {
@@ -394,8 +392,8 @@ export function FibChart() {
           )}
 
           {/* ── Fibonacci Structure Lines ── */}
-          {fibLevels && (() => {
-            const trendUp = trend === "Bullish";
+          {fibLevels && fibTrend && (() => {
+            const trendUp = fibTrend === "Bullish";
             return (
               <>
                 <FibLine
@@ -429,14 +427,6 @@ export function FibChart() {
                   color={trendUp ? SL_COLOR : SWING_COLOR}
                   lo={lo} hi={hi} plotH={plotH} plotW={plotW}
                   dashed={false} strokeWidth={2.5}
-                />
-                <FibLine
-                  pct="-27%"
-                  desc="Extension (Take Profit)"
-                  price={fibLevels.extensionNeg27}
-                  color={TP_COLOR}
-                  lo={lo} hi={hi} plotH={plotH} plotW={plotW}
-                  dashed strokeWidth={2}
                 />
               </>
             );

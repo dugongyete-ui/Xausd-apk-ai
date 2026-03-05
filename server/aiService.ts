@@ -67,20 +67,23 @@ Tab 3 - AI Chat (tab ini): Tempat pengguna bicara dengan kamu. Kamu bisa menjawa
 
 Tab 4 - Settings: Pengaturan aplikasi termasuk preferensi notifikasi dan konfigurasi pengguna.
 
-STRATEGI SINYAL LIBARTIN:
-Timeframe analisis: M15 untuk trend dan struktur Fibonacci, M5 untuk konfirmasi entry.
-Trend Bullish: Harga di atas EMA200 DAN EMA50 di atas EMA200 pada M15.
-Trend Bearish: Harga di bawah EMA200 DAN EMA50 di bawah EMA200 pada M15.
-Fibonacci anchor: Fractal 5-bar tertua yang valid pada M15.
+STRATEGI SINYAL LIBARTIN (BI-DIRECTIONAL SCALPING):
+Timeframe analisis: M15 untuk struktur Fibonacci, M5 untuk konfirmasi entry.
+Sistem ini bersifat bi-directional — bisa menghasilkan sinyal BUY maupun SELL dalam kondisi pasar apapun.
+
+Dua jenis trend yang perlu dipahami:
+1. Fibonacci Trend (fibTrend): Arah impulse swing yang terdeteksi pada M15. Inilah yang menentukan arah sinyal BUY atau SELL. Bullish = swing low ke swing high, sistem cari retracement BUY. Bearish = swing high ke swing low, sistem cari retracement SELL.
+2. Trend EMA M15 (trend): Posisi harga terhadap EMA50 dan EMA200 pada M15. Ini hanya konteks makro, TIDAK memblokir sinyal.
+
+Fibonacci anchor: Fractal 5-bar tertua yang valid pada M15 (baik arah bullish maupun bearish).
 Golden Zone: Retracement 61.8% sampai 78.6% dari swing (zona entry utama).
-Konfirmasi entry M5 (TIGA syarat wajib terpenuhi bersamaan):
-1. Harga berada di dalam Golden Zone (61.8% - 78.6%).
-2. Pola candlestick konfirmasi: Pin Bar Rejection atau Engulfing Bullish/Bearish pada M5.
-3. EMA alignment M5: EMA20 > EMA50 untuk konfirmasi Bullish. EMA20 < EMA50 untuk konfirmasi Bearish.
+Konfirmasi entry M5 (syarat wajib):
+1. Candle M5 closed menyentuh zona Golden Zone (61.8% - 78.6%).
+2. Pola candlestick konfirmasi: Pin Bar Rejection atau Engulfing pada M5.
 Stop Loss Bullish: Di bawah Swing Low fractal. Stop Loss Bearish: Di atas Swing High fractal.
-TP1 (Scalping): Risk-Reward 1:1 dari SL, maksimal 15 poin dari entry. Untuk ambil profit cepat.
-TP2 (Full Target): Fibonacci extension -27% atau RR 1:1.8, cap 28 poin dari entry. Target optimal jika momentum kuat.
-Aturan satu posisi: Hanya satu sinyal aktif per anchor fractal. Sinyal baru hanya muncul jika fractal berubah.
+TP1 (Scalping): Risk-Reward 1:1 dari SL, maksimal 15 poin dari entry.
+TP2 (Full Target): RR 1:1.8, cap 28 poin dari entry.
+Dedup sinyal: Satu sinyal per candle M5 closed. Setiap candle baru berpotensi menghasilkan sinyal baru jika kondisi terpenuhi. Tidak ada cooldown waktu — hanya epoch-based deduplication.
 
 CARA MENJAWAB PERTANYAAN PENGGUNA:
 Jika pengguna tanya kondisi pasar: gunakan data real-time yang dikirim bersama pesannya (harga, trend, EMA, Fibonacci, sinyal aktif).
@@ -222,13 +225,19 @@ function buildMarketContext(snapshot: MarketStateSnapshot): string {
   const p = snapshot.currentPrice;
   const fib = snapshot.fibLevels;
 
-  const trendLabel = snapshot.trend === "Bullish"
+  const emaTrendLabel = snapshot.trend === "Bullish"
     ? "Bullish (Harga > EMA200, EMA50 > EMA200)"
     : snapshot.trend === "Bearish"
     ? "Bearish (Harga < EMA200, EMA50 < EMA200)"
     : snapshot.trend === "No Trade"
     ? "No Trade (EMA tidak selaras)"
     : "Loading";
+
+  const fibTrendLabel = snapshot.fibTrend === "Bullish"
+    ? "Bullish — impulse naik terdeteksi, sistem cari retracement BUY"
+    : snapshot.fibTrend === "Bearish"
+    ? "Bearish — impulse turun terdeteksi, sistem cari retracement SELL"
+    : "Belum terdeteksi";
 
   const m5EmaStatus = (() => {
     const e20 = snapshot.ema20m5;
@@ -246,8 +255,9 @@ function buildMarketContext(snapshot: MarketStateSnapshot): string {
     `Status Pasar: ${snapshot.marketOpen ? "Buka" : "Tutup"}`,
     `Koneksi Deriv: ${snapshot.connectionStatus}`,
     ``,
-    `[ANALISIS TEKNIKAL M15 — Trend & Struktur]`,
-    `Trend M15: ${trendLabel}`,
+    `[ANALISIS TEKNIKAL M15 — Struktur & Fibonacci]`,
+    `Fibonacci Trend (penentu arah sinyal): ${fibTrendLabel}`,
+    `Trend EMA Makro (referensi saja, tidak memblokir sinyal): ${emaTrendLabel}`,
     `EMA50 (M15): ${snapshot.ema50 !== null ? snapshot.ema50.toFixed(2) : "N/A"}`,
     `EMA200 (M15): ${snapshot.ema200 !== null ? snapshot.ema200.toFixed(2) : "N/A"}`,
     `Candle M15 terkumpul: ${snapshot.m15CandleCount}`,
@@ -263,12 +273,11 @@ function buildMarketContext(snapshot: MarketStateSnapshot): string {
   if (fib) {
     lines.push(
       ``,
-      `[FIBONACCI LEVELS (M15 Swing)]`,
+      `[FIBONACCI LEVELS (M15 Swing — arah: ${snapshot.fibTrend ?? "N/A"})]`,
       `Swing High (anchor atas): ${fib.swingHigh.toFixed(2)}`,
       `Golden 61.8% (zona entry): ${fib.level618.toFixed(2)}`,
       `Deep 78.6% (zona entry dalam): ${fib.level786.toFixed(2)}`,
-      `Swing Low (anchor bawah): ${fib.swingLow.toFixed(2)}`,
-      `Extension -27% (target TP): ${fib.extensionNeg27.toFixed(2)}`
+      `Swing Low (anchor bawah): ${fib.swingLow.toFixed(2)}`
     );
   } else {
     lines.push(``, `[FIBONACCI]: Belum ada struktur swing valid yang terdeteksi pada M15`);

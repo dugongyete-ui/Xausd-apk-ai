@@ -122,6 +122,7 @@ interface TradingContextValue {
   ema200: number | null;
   trend: TrendState;
   fibLevels: FibLevels | null;
+  fibTrend: "Bullish" | "Bearish" | null;
   currentSignal: TradingSignal | null;
   // activeSignal: sinyal aktif yang sedang di-track TP/SL
   // Berbeda dari currentSignal — tetap ada sampai TP/SL tercapai
@@ -250,18 +251,12 @@ function calcATR(candles: Candle[], period: number): number {
 //
 // Fibonacci kemudian dihitung sebagai retracement dari impulse tersebut.
 function findSwings(
-  candles: Candle[],
-  trend: "Bullish" | "Bearish"
-): { swingHigh: number; swingLow: number; anchorEpoch: number } | null {
+  candles: Candle[]
+): { swingHigh: number; swingLow: number; anchorEpoch: number; direction: "Bullish" | "Bearish" } | null {
   const LOOKBACK = Math.min(candles.length, 120);
   const slice = candles.slice(-LOOKBACK);
   const n = slice.length;
   if (n < 12) return null;
-
-  const closes = candles.map((c) => c.close);
-  const ema50Full = calcEMAFull(closes, EMA50_PERIOD);
-  const ema200Full = calcEMAFull(closes, EMA200_PERIOD);
-  const offset = candles.length - LOOKBACK;
 
   // Kumpulkan semua swing high dan low lokal (3-bar fractal)
   // Tidak pakai candle terakhir (live) untuk hindari repaint
@@ -277,6 +272,7 @@ function findSwings(
   }
 
   // Validasi impulse wave: bersih, satu arah, tidak sideways
+  // EMA alignment dihapus agar responsif untuk scalping bi-directional
   function isCleanImpulse(
     fromIdx: number, toIdx: number,
     fromPrice: number, toPrice: number,
@@ -309,56 +305,45 @@ function findSwings(
     return true;
   }
 
-  if (trend === "Bullish") {
-    // Cari impulse naik terbaru: SwingLow → SwingHigh
-    for (let hi = swingHighs.length - 1; hi >= 0; hi--) {
-      const hIdx = swingHighs[hi];
-      const absHi = offset + hIdx;
-
-      // EMA bullish di candle swing high
-      const e50 = ema50Full[absHi];
-      const e200 = ema200Full[absHi];
-      if (isNaN(e50) || isNaN(e200) || e50 <= e200) continue;
-
-      const swingHighPrice = slice[hIdx].high;
-
-      // Cari swing low terdekat sebelum swing high ini
-      for (let li = swingLows.length - 1; li >= 0; li--) {
-        const lIdx = swingLows[li];
-        if (lIdx >= hIdx) continue;
-
-        const swingLowPrice = slice[lIdx].low;
-        if (isCleanImpulse(lIdx, hIdx, swingLowPrice, swingHighPrice, "up")) {
-          return { swingHigh: swingHighPrice, swingLow: swingLowPrice, anchorEpoch: slice[hIdx].epoch };
-        }
-      }
-    }
-  } else {
-    // Cari impulse turun terbaru: SwingHigh → SwingLow
+  // Cari impulse naik terbaru: SwingLow → SwingHigh
+  let bullResult: { swingHigh: number; swingLow: number; anchorEpoch: number; direction: "Bullish" } | null = null;
+  for (let hi = swingHighs.length - 1; hi >= 0; hi--) {
+    const hIdx = swingHighs[hi];
+    const swingHighPrice = slice[hIdx].high;
     for (let li = swingLows.length - 1; li >= 0; li--) {
       const lIdx = swingLows[li];
-      const absLi = offset + lIdx;
-
-      // EMA bearish di candle swing low
-      const e50 = ema50Full[absLi];
-      const e200 = ema200Full[absLi];
-      if (isNaN(e50) || isNaN(e200) || e50 >= e200) continue;
-
+      if (lIdx >= hIdx) continue;
       const swingLowPrice = slice[lIdx].low;
-
-      // Cari swing high terdekat sebelum swing low ini
-      for (let hi = swingHighs.length - 1; hi >= 0; hi--) {
-        const hIdx = swingHighs[hi];
-        if (hIdx >= lIdx) continue;
-
-        const swingHighPrice = slice[hIdx].high;
-        if (isCleanImpulse(hIdx, lIdx, swingHighPrice, swingLowPrice, "down")) {
-          return { swingHigh: swingHighPrice, swingLow: swingLowPrice, anchorEpoch: slice[lIdx].epoch };
-        }
+      if (isCleanImpulse(lIdx, hIdx, swingLowPrice, swingHighPrice, "up")) {
+        bullResult = { swingHigh: swingHighPrice, swingLow: swingLowPrice, anchorEpoch: slice[hIdx].epoch, direction: "Bullish" };
+        break;
       }
     }
+    if (bullResult) break;
   }
-  return null;
+
+  // Cari impulse turun terbaru: SwingHigh → SwingLow
+  let bearResult: { swingHigh: number; swingLow: number; anchorEpoch: number; direction: "Bearish" } | null = null;
+  for (let li = swingLows.length - 1; li >= 0; li--) {
+    const lIdx = swingLows[li];
+    const swingLowPrice = slice[lIdx].low;
+    for (let hi = swingHighs.length - 1; hi >= 0; hi--) {
+      const hIdx = swingHighs[hi];
+      if (hIdx >= lIdx) continue;
+      const swingHighPrice = slice[hIdx].high;
+      if (isCleanImpulse(hIdx, lIdx, swingHighPrice, swingLowPrice, "down")) {
+        bearResult = { swingHigh: swingHighPrice, swingLow: swingLowPrice, anchorEpoch: slice[lIdx].epoch, direction: "Bearish" };
+        break;
+      }
+    }
+    if (bearResult) break;
+  }
+
+  // Kembalikan impulse paling baru (anchorEpoch lebih tinggi = lebih baru)
+  if (bullResult && bearResult) {
+    return bullResult.anchorEpoch >= bearResult.anchorEpoch ? bullResult : bearResult;
+  }
+  return bullResult ?? bearResult ?? null;
 }
 
 function calcFib(swingHigh: number, swingLow: number, trend: "Bullish" | "Bearish"): FibLevels {
@@ -547,66 +532,51 @@ function simulateOfflineSignals(
     if (!activeGen && simM5.length >= 3 && simM15.length >= EMA200_PERIOD + 5 &&
         nowMs - lastSigEpochMs >= 30 * 60 * 1000) {
 
-      const cl15 = simM15.map((c) => c.close);
-      const e50arr = calcEMA(cl15, EMA50_PERIOD);
-      const e200arr = calcEMA(cl15, EMA200_PERIOD);
-      if (e50arr.length < 1 || e200arr.length < 1) { m5Epoch += M5_STEP; continue; }
+      const swings = findSwings(simM15);
+      if (swings) {
+        const swingTrend = swings.direction;
+        const fib = calcFib(swings.swingHigh, swings.swingLow, swingTrend);
+        const closedM5 = simM5[simM5.length - 2];
+        const prevM5 = simM5[simM5.length - 3];
 
-      const e50 = e50arr[e50arr.length - 1];
-      const e200 = e200arr[e200arr.length - 1];
-      const lastClose15 = simM15[simM15.length - 1].close;
+        const isRej = checkRejection(closedM5, swingTrend, fib);
+        const isEng = checkEngulfing(prevM5, closedM5, swingTrend);
 
-      let trendSim: "Bullish" | "Bearish" | null = null;
-      if (lastClose15 > e200 && e50 > e200) trendSim = "Bullish";
-      else if (lastClose15 < e200 && e50 < e200) trendSim = "Bearish";
+        if (isRej || isEng) {
+          const slLvl = swingTrend === "Bullish" ? fib.swingLow : fib.swingHigh;
+          const slDist = Math.abs(price - slLvl);
+          const m5Atr = calcATR(simM5.slice(0, -1), ATR_PERIOD);
 
-      if (trendSim && simM15.length >= EMA200_PERIOD + 5) {
-        const swings = findSwings(simM15, trendSim);
-        if (swings) {
-          const fib = calcFib(swings.swingHigh, swings.swingLow, trendSim);
-          const closedM5 = simM5[simM5.length - 2];
-          const prevM5 = simM5[simM5.length - 3];
+          if (slDist >= m5Atr * 0.1 && m5Atr >= M5_ATR_MIN) {
+            const tp1Dist = Math.min(slDist, 15);
+            const tp1 = swingTrend === "Bullish" ? price + tp1Dist : price - tp1Dist;
+            const tp2Dist = Math.min(Math.max(slDist * 1.8, 10), 28);
+            const tp2 = swingTrend === "Bullish" ? price + tp2Dist : price - tp2Dist;
 
-          const isRej = checkRejection(closedM5, trendSim, fib);
-          const isEng = checkEngulfing(prevM5, closedM5, trendSim);
-
-          if (isRej || isEng) {
-            const slLvl = trendSim === "Bullish" ? fib.swingLow : fib.swingHigh;
-            const slDist = Math.abs(price - slLvl);
-            const m5Atr = calcATR(simM5.slice(0, -1), ATR_PERIOD);
-
-            if (slDist >= m5Atr * 0.1 && m5Atr >= M5_ATR_MIN) {
-              const tp1Dist = Math.min(slDist, 15);
-              const tp1 = trendSim === "Bullish" ? price + tp1Dist : price - tp1Dist;
-              const extDist = Math.abs(fib.extensionNeg27 - price);
-              const tp2Dist = Math.min(Math.max(extDist, slDist * 1.8, 10), 28);
-              const tp2 = trendSim === "Bullish" ? price + tp2Dist : price - tp2Dist;
-
-              const sigKey = makeSignalKey(price, trendSim, nowMs);
-              if (!existingKeys.has(sigKey)) {
-                const sig: TradingSignal = {
-                  id: sigKey,
-                  pair: "XAUUSD",
-                  timeframe: "M15/M5",
-                  trend: trendSim,
-                  entryPrice: price,
-                  stopLoss: slLvl,
-                  takeProfit: tp1,
-                  takeProfit2: tp2,
-                  riskReward: Math.round((tp1Dist / slDist) * 100) / 100,
-                  riskReward2: Math.round((tp2Dist / slDist) * 100) / 100,
-                  lotSize: Math.round((balance * 0.01 / slDist) * 100) / 100,
-                  timestampUTC: new Date(nowMs).toUTCString(),
-                  fibLevels: fib,
-                  status: "active",
-                  signalCandleEpoch: closedM5.epoch,
-                  confirmationType: isEng ? "engulfing" : "rejection",
-                  outcome: "pending",
-                };
-                activeGen = { signal: sig, tp: tp1, sl: slLvl, isBull: trendSim === "Bullish" };
-                lastSigEpochMs = nowMs;
-                existingKeys.add(sigKey);
-              }
+            const sigKey = makeSignalKey(price, swingTrend, nowMs);
+            if (!existingKeys.has(sigKey)) {
+              const sig: TradingSignal = {
+                id: sigKey,
+                pair: "XAUUSD",
+                timeframe: "M15/M5",
+                trend: swingTrend,
+                entryPrice: price,
+                stopLoss: slLvl,
+                takeProfit: tp1,
+                takeProfit2: tp2,
+                riskReward: Math.round((tp1Dist / slDist) * 100) / 100,
+                riskReward2: Math.round((tp2Dist / slDist) * 100) / 100,
+                lotSize: Math.round((balance * 0.01 / slDist) * 100) / 100,
+                timestampUTC: new Date(nowMs).toUTCString(),
+                fibLevels: fib,
+                status: "active",
+                signalCandleEpoch: closedM5.epoch,
+                confirmationType: isEng ? "engulfing" : "rejection",
+                outcome: "pending",
+              };
+              activeGen = { signal: sig, tp: tp1, sl: slLvl, isBull: swingTrend === "Bullish" };
+              lastSigEpochMs = nowMs;
+              existingKeys.add(sigKey);
             }
           }
         }
@@ -661,9 +631,8 @@ export function TradingProvider({ children }: { children: ReactNode }) {
   const savedSignalKeys = useRef<Set<string>>(new Set());
   const wasOpenRef = useRef<boolean>(forexMarketOpen());
   const derivMarketClosedRef = useRef<boolean>(false);
-  // Single position rule: cooldown 30 menit per anchor (bukan permanent block)
-  const lastSignaledAnchorRef = useRef<number | null>(null);
-  const lastSignaledTimeMsRef = useRef<number>(0);
+  // Dedup: 1 sinyal per candle M5 closed — unlimited signal tanpa cooldown waktu
+  const lastSignaledCandleEpochRef = useRef<number | null>(null);
   // Track last swing: anchorEpoch (fractal candle epoch) + pairValue (swingLow/swingHigh).
   // Fibonacci updates when EITHER anchor changes (new fractal) OR pairValue changes
   // (market made new extreme → zone shifts responsively).
@@ -1073,43 +1042,48 @@ export function TradingProvider({ children }: { children: ReactNode }) {
   // Fibonacci zones are STATIC — they only update when a NEW swing forms on M15.
   // This prevents the zones from jumping around on every candle tick.
   const [fibLevels, setFibLevels] = useState<FibLevels | null>(null);
+  const [fibTrend, setFibTrend] = useState<"Bullish" | "Bearish" | null>(null);
   // currentAnchorEpoch dipakai oleh currentSignal memo untuk single position rule
   const [currentAnchorEpoch, setCurrentAnchorEpoch] = useState<number | null>(null);
 
   useEffect(() => {
-    if (trend === "Loading" || trend === "No Trade") {
+    if (m15Candles.length < EMA200_PERIOD) {
       if (lastSwingRef.current !== null) {
         lastSwingRef.current = null;
         setFibLevels(null);
+        setFibTrend(null);
         setCurrentAnchorEpoch(null);
       }
       return;
     }
 
-    const swings = findSwings(m15Candles, trend);
+    // Cari impulse paling baru tanpa peduli EMA trend arah (bi-directional scalping)
+    const swings = findSwings(m15Candles);
     if (!swings) {
       if (lastSwingRef.current !== null) {
         lastSwingRef.current = null;
         setFibLevels(null);
+        setFibTrend(null);
         setCurrentAnchorEpoch(null);
       }
       return;
     }
 
+    const impulseTrend = swings.direction;
     const last = lastSwingRef.current;
-    const pairValue = trend === "Bearish" ? swings.swingLow : swings.swingHigh;
-    const anchorChanged = !last || last.trend !== trend || last.anchorEpoch !== swings.anchorEpoch;
+    const pairValue = impulseTrend === "Bearish" ? swings.swingLow : swings.swingHigh;
+    const anchorChanged = !last || last.trend !== impulseTrend || last.anchorEpoch !== swings.anchorEpoch;
     const pairChanged  = last && last.anchorEpoch === swings.anchorEpoch && last.pairValue !== pairValue;
 
     if (anchorChanged || pairChanged) {
-      lastSwingRef.current = { anchorEpoch: swings.anchorEpoch, trend, pairValue };
-      // Reset signal lock hanya jika anchor benar-benar berubah (bukan sekedar pair update)
+      lastSwingRef.current = { anchorEpoch: swings.anchorEpoch, trend: impulseTrend, pairValue };
       if (anchorChanged) {
         setCurrentAnchorEpoch(swings.anchorEpoch);
+        setFibTrend(impulseTrend);
       }
-      setFibLevels(calcFib(swings.swingHigh, swings.swingLow, trend as "Bullish" | "Bearish"));
+      setFibLevels(calcFib(swings.swingHigh, swings.swingLow, impulseTrend));
     }
-  }, [m15Candles, trend]);
+  }, [m15Candles]);
 
   // Is current M5 price inside M15 Fibonacci zone?
   const inZone = useMemo(() => {
@@ -1119,30 +1093,22 @@ export function TradingProvider({ children }: { children: ReactNode }) {
     return currentPrice >= lo && currentPrice <= hi;
   }, [fibLevels, currentPrice]);
 
-  // ─── Signal detection: M15 zone + M5 confirmation ─────────────────────────
-  // Aturan entry diperlonggar untuk lebih sering menghasilkan sinyal:
+  // ─── Signal detection: M15 zone + M5 confirmation — UNLIMITED ────────────
   // ① Evaluasi candle M5 CLOSED (m5Candles[n-2])
   // ② Zone check diperluas: 50%–88.6% dari swing range
-  // ③ Rejection: wick ≥ 0.8× body (dari 1.5×), tanpa body center check
-  //    Engulfing: partial 75% engulf (dari full engulf)
-  // ④ Single position: cooldown 30 menit (bukan permanent block per anchor)
+  // ③ Rejection: wick ≥ 0.8× body, Engulfing: partial 75% engulf
+  // ④ Dedup: 1 sinyal per candle M5 closed (epoch-based), tanpa cooldown waktu
   const currentSignal = useMemo((): TradingSignal | null => {
     if (
-      !fibLevels || !atr || atr <= 0 ||
-      trend === "Loading" || trend === "No Trade" ||
+      !fibLevels || !fibTrend || !atr || atr <= 0 ||
       m5Candles.length < 3 || currentPrice === null ||
       marketState === "closed" || currentAnchorEpoch === null
     ) return null;
 
-    // ④ Single position rule: cooldown 5 menit per anchor untuk scalping responsif
-    const SIGNAL_COOLDOWN_MS = 5 * 60 * 1000;
-    if (lastSignaledAnchorRef.current === currentAnchorEpoch &&
-        Date.now() - lastSignaledTimeMsRef.current < SIGNAL_COOLDOWN_MS) return null;
-
     // ① Gunakan candle CLOSED: n-2 (candle closed terakhir), n-3 (sebelumnya)
     const closedM5 = m5Candles[m5Candles.length - 2];
     const prevM5   = m5Candles[m5Candles.length - 3];
-    const trendDir = trend as "Bullish" | "Bearish";
+    const trendDir = fibTrend;
 
     // Zona diperluas: 50%–88.6%
     const range = Math.abs(fibLevels.swingHigh - fibLevels.swingLow);
@@ -1196,9 +1162,8 @@ export function TradingProvider({ children }: { children: ReactNode }) {
       ? currentPrice - tp1Dist
       : currentPrice + tp1Dist;
 
-    // TP2 (full target): Fibonacci extension atau 1.8:1 RR, cap 28 pts untuk scalping realistis
-    const extDist = Math.abs(fibLevels.extensionNeg27 - currentPrice);
-    const tp2Dist = Math.min(Math.max(extDist, slDistance * 1.8, 10), 28);
+    // TP2 (full target): 1.8:1 RR, cap 28 pts untuk scalping realistis
+    const tp2Dist = Math.min(Math.max(slDistance * 1.8, 10), 28);
     const tp2 = trendDir === "Bearish"
       ? currentPrice - tp2Dist
       : currentPrice + tp2Dist;
@@ -1209,7 +1174,8 @@ export function TradingProvider({ children }: { children: ReactNode }) {
     const rr2 = tp2Dist / slDistance;
 
     const nowMs = Date.now();
-    const sigKey = makeSignalKey(currentPrice, trend, nowMs);
+    // Signal ID berdasarkan epoch candle M5 — dedup alami tanpa cooldown waktu
+    const sigKey = `${closedM5.epoch}_${trendDir}`;
 
     return {
       id: sigKey,
@@ -1230,17 +1196,16 @@ export function TradingProvider({ children }: { children: ReactNode }) {
       confirmationType,
       outcome: "pending",
     };
-  }, [fibLevels, atr, trend, currentPrice, m5Candles, balance, marketState, currentAnchorEpoch]);
+  }, [fibLevels, fibTrend, atr, currentPrice, m5Candles, balance, marketState, currentAnchorEpoch]);
 
   useEffect(() => {
-    if (currentSignal && currentAnchorEpoch !== null) {
+    if (currentSignal) {
       saveSignal(currentSignal, currentSignal.id);
-      lastSignaledAnchorRef.current = currentAnchorEpoch;
-      lastSignaledTimeMsRef.current = Date.now();
+      lastSignaledCandleEpochRef.current = currentSignal.signalCandleEpoch ?? null;
       // Simpan sebagai activeSignal untuk TP/SL tracking
       setActiveSignal(currentSignal);
     }
-  }, [currentSignal?.id, saveSignal, currentAnchorEpoch]);
+  }, [currentSignal?.id, saveSignal]);
 
   // Ketika anchor baru terbentuk, clear activeSignal yang lama
   // (anchor baru = sinyal baru akan menggantikan)
@@ -1403,6 +1368,7 @@ export function TradingProvider({ children }: { children: ReactNode }) {
       ema200,
       trend,
       fibLevels,
+      fibTrend,
       currentSignal,
       activeSignal,
       signalHistory,
@@ -1422,7 +1388,7 @@ export function TradingProvider({ children }: { children: ReactNode }) {
     }),
     [
       m5Candles, m15Candles, currentPrice, ema50, ema200, trend,
-      fibLevels, currentSignal, activeSignal, signalHistory, atr, connectionStatus,
+      fibLevels, fibTrend, currentSignal, activeSignal, signalHistory, atr, connectionStatus,
       balance, setBalance, inZone, clearHistory, marketState, marketNextOpen,
       notificationEnabled, requestNotifications, updateSignalOutcome,
       injectDemoSignal, clearDemoSignal,

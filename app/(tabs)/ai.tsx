@@ -398,28 +398,36 @@ export default function AIScreen() {
     }
 
     try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 45000);
+
       const res = await fetch(`${BACKEND_URL}/api/ai/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ message: text }),
+        signal: controller.signal,
       });
+      clearTimeout(timeoutId);
 
-      const contentType = res.headers.get("content-type") ?? "";
-      if (!contentType.includes("application/json")) {
-        throw new Error("Server tidak merespons dengan benar. Coba lagi.");
+      let data: { response?: string; error?: string } = {};
+      try {
+        data = await res.json() as { response?: string; error?: string };
+      } catch {
+        throw new Error("AI sedang tidak tersedia. Coba lagi sebentar.");
       }
 
-      const data = await res.json() as { response?: string; error?: string };
-
       if (!res.ok) {
-        throw new Error(data.error || `HTTP ${res.status}`);
+        throw new Error(data.error || "AI sedang tidak tersedia. Coba lagi sebentar.");
       }
 
       const reply = data.response?.trim() || "Maaf, AI tidak dapat merespons saat ini.";
 
       animateWordByWord(msgId, reply, () => setIsStreaming(false));
     } catch (err: unknown) {
-      const errMsg = err instanceof Error ? err.message : "Terjadi kesalahan koneksi.";
+      const isAborted = err instanceof Error && err.name === "AbortError";
+      const errMsg = isAborted
+        ? "AI timeout (>45 detik). Coba lagi dengan pertanyaan singkat."
+        : err instanceof Error ? err.message : "Terjadi kesalahan koneksi.";
       setMessages((prev) =>
         prev.map((m) =>
           m.id === msgId

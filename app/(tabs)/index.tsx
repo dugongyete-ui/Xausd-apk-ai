@@ -311,12 +311,16 @@ function FibLevelsCard() {
 
   const isBull = trend === "Bullish";
 
+  const SWING_COLOR = "#C084FC";
+  const ZONE786_COLOR = "#F97316";
+  const TP_COLOR = "#22C55E";
+
   const levels = isBull
     ? [
         {
-          label: "0.0% · Swing High (Resistance)",
+          label: "0.0% · Swing High (Pivot)",
           value: fibLevels.swingHigh,
-          color: C.green,
+          color: SWING_COLOR,
           pct: "0.0%",
         },
         {
@@ -328,7 +332,7 @@ function FibLevelsCard() {
         {
           label: "78.6% · Deep Retracement",
           value: fibLevels.level786,
-          color: "#FBBF24",
+          color: ZONE786_COLOR,
           pct: "78.6%",
         },
         {
@@ -340,15 +344,15 @@ function FibLevelsCard() {
         {
           label: "-27% Extension (Take Profit)",
           value: fibLevels.extensionNeg27,
-          color: C.blue,
+          color: TP_COLOR,
           pct: "-27%",
         },
       ]
     : [
         {
-          label: "0.0% · Swing Low (Support)",
+          label: "0.0% · Swing Low (Pivot)",
           value: fibLevels.swingLow,
-          color: C.red,
+          color: SWING_COLOR,
           pct: "0.0%",
         },
         {
@@ -360,19 +364,19 @@ function FibLevelsCard() {
         {
           label: "78.6% · Deep Retracement",
           value: fibLevels.level786,
-          color: "#FBBF24",
+          color: ZONE786_COLOR,
           pct: "78.6%",
         },
         {
           label: "100% · Swing High (SL Ref)",
           value: fibLevels.swingHigh,
-          color: C.green,
+          color: C.red,
           pct: "100%",
         },
         {
           label: "-27% Extension (Take Profit)",
           value: fibLevels.extensionNeg27,
-          color: C.blue,
+          color: TP_COLOR,
           pct: "-27%",
         },
       ];

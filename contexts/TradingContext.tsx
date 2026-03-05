@@ -414,7 +414,7 @@ function checkRejection(candle: Candle, trend: "Bullish" | "Bearish", fib: FibLe
   return true;
 }
 
-// Checks last two M5 candles for engulfing pattern — diperlonggar (partial engulf 75%)
+// Checks last two M5 candles for engulfing pattern — diperlonggar untuk scalping (partial engulf 55%)
 function checkEngulfing(prev: Candle, curr: Candle, trend: "Bullish" | "Bearish"): boolean {
   const prevBody = Math.abs(prev.close - prev.open);
   const currBody = Math.abs(curr.close - curr.open);
@@ -423,14 +423,14 @@ function checkEngulfing(prev: Candle, curr: Candle, trend: "Bullish" | "Bearish"
     const prevBear = prev.close < prev.open;
     const currBull = curr.close > curr.open;
     if (!prevBear || !currBull) return false;
-    const engulfTarget = prev.close + (prev.open - prev.close) * 0.75;
-    return curr.close >= engulfTarget && curr.open <= prev.close + prevBody * 0.25;
+    const engulfTarget = prev.close + (prev.open - prev.close) * 0.55;
+    return curr.close >= engulfTarget && curr.open <= prev.close + prevBody * 0.35;
   }
   const prevBull = prev.close > prev.open;
   const currBear = curr.close < curr.open;
   if (!prevBull || !currBear) return false;
-  const engulfTarget = prev.close - (prev.close - prev.open) * 0.75;
-  return curr.close <= engulfTarget && curr.open >= prev.close - prevBody * 0.25;
+  const engulfTarget = prev.close - (prev.close - prev.open) * 0.55;
+  return curr.close <= engulfTarget && curr.open >= prev.close - prevBody * 0.35;
 }
 
 function makeSignalKey(price: number, trend: string, epochMs: number): string {
@@ -912,8 +912,8 @@ export function TradingProvider({ children }: { children: ReactNode }) {
       marketState === "closed" || currentAnchorEpoch === null
     ) return null;
 
-    // ④ Single position rule: cooldown 30 menit per anchor
-    const SIGNAL_COOLDOWN_MS = 30 * 60 * 1000;
+    // ④ Single position rule: cooldown 5 menit per anchor untuk scalping responsif
+    const SIGNAL_COOLDOWN_MS = 5 * 60 * 1000;
     if (lastSignaledAnchorRef.current === currentAnchorEpoch &&
         Date.now() - lastSignaledTimeMsRef.current < SIGNAL_COOLDOWN_MS) return null;
 

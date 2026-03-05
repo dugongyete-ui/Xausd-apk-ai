@@ -357,20 +357,20 @@ function checkEngulfing(prev: Candle, curr: Candle, trend: "Bullish" | "Bearish"
   const prevBody = Math.abs(prev.close - prev.open);
   const currBody = Math.abs(curr.close - curr.open);
   if (prevBody === 0 || currBody === 0) return false;
-  // Diperlonggar: cukup curr body >= 75% dari prev body (dari full engulf)
+  // Diperlonggar untuk scalping: cukup curr body >= 55% dari prev body
   if (trend === "Bullish") {
     const prevBear = prev.close < prev.open;
     const currBull = curr.close > curr.open;
     if (!prevBear || !currBull) return false;
-    // Partial engulfing: curr close melebihi 75% prev body
-    const engulfTarget = prev.close + (prev.open - prev.close) * 0.75;
-    return curr.close >= engulfTarget && curr.open <= prev.close + prevBody * 0.25;
+    // Partial engulfing: curr close melebihi 55% prev body
+    const engulfTarget = prev.close + (prev.open - prev.close) * 0.55;
+    return curr.close >= engulfTarget && curr.open <= prev.close + prevBody * 0.35;
   }
   const prevBull = prev.close > prev.open;
   const currBear = curr.close < curr.open;
   if (!prevBull || !currBear) return false;
-  const engulfTarget = prev.close - (prev.close - prev.open) * 0.75;
-  return curr.close <= engulfTarget && curr.open >= prev.close - prevBody * 0.25;
+  const engulfTarget = prev.close - (prev.close - prev.open) * 0.55;
+  return curr.close <= engulfTarget && curr.open >= prev.close - prevBody * 0.35;
 }
 
 function getTrend(m15Candles: Candle[]): TrendState {
@@ -661,9 +661,9 @@ class DerivService {
       return;
     }
 
-    // Single position rule: cooldown 30 menit per anchor (bukan permanent block)
-    // Jika anchor sama & belum 30 menit, blok. Jika anchor baru, izinkan langsung.
-    const SIGNAL_COOLDOWN_MS = 30 * 60 * 1000; // 30 menit
+    // Single position rule: cooldown 5 menit per anchor untuk scalping responsif
+    // Jika anchor sama & belum 5 menit, blok. Jika anchor baru, izinkan langsung.
+    const SIGNAL_COOLDOWN_MS = 5 * 60 * 1000; // 5 menit
     if (this.lastSignaledAnchorEpoch === anchorEpoch &&
         Date.now() - this.lastSignaledTimeMs < SIGNAL_COOLDOWN_MS) {
       this.currentSignal = null;

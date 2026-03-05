@@ -108,6 +108,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
     let streamDone = false;
 
+    const heartbeat = setInterval(() => {
+      if (!streamDone) {
+        res.write(": keep-alive\n\n");
+        flush();
+      }
+    }, 5000);
+
+    const clearHeartbeat = () => clearInterval(heartbeat);
+
     aiService.chatStream(
       message.trim(),
       snapshot,
@@ -120,6 +129,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       (_fullResponse: string) => {
         if (!streamDone) {
           streamDone = true;
+          clearHeartbeat();
           res.write(`data: [DONE]\n\n`);
           flush();
           res.end();
@@ -129,6 +139,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         console.error("[Routes] Stream error:", err);
         if (!streamDone) {
           streamDone = true;
+          clearHeartbeat();
           res.write(`data: ${JSON.stringify({ error: err })}\n\n`);
           flush();
           res.end();
@@ -138,6 +149,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
     res.on("close", () => {
       streamDone = true;
+      clearHeartbeat();
     });
   });
 

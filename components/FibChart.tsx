@@ -164,6 +164,18 @@ export function FibChart() {
     return full.slice(-visibleCandles.length);
   }, [selectedTF, m15Candles, visibleCandles.length]);
 
+  const m5Ema20Series = useMemo(() => {
+    if (selectedTF !== "M5" || candles.length < 20) return [];
+    const full = calcEMAFull(candles.map((c) => c.close), 20);
+    return full.slice(-visibleCandles.length);
+  }, [selectedTF, candles, visibleCandles.length]);
+
+  const m5Ema50Series = useMemo(() => {
+    if (selectedTF !== "M5" || candles.length < 50) return [];
+    const full = calcEMAFull(candles.map((c) => c.close), 50);
+    return full.slice(-visibleCandles.length);
+  }, [selectedTF, candles, visibleCandles.length]);
+
   const m15Ema50Val = useMemo(() => {
     if (ema50Series.length === 0) return null;
     const v = ema50Series[ema50Series.length - 1];
@@ -191,11 +203,17 @@ export function FibChart() {
     if (fibLevels) {
       hiV = Math.max(hiV, fibLevels.swingHigh);
       loV = Math.min(loV, fibLevels.swingLow);
+      hiV = Math.max(hiV, fibLevels.extensionNeg27);
       loV = Math.min(loV, fibLevels.extensionNeg27);
+    }
+    const sigTP = currentSignal?.takeProfit ?? activeSignal?.takeProfit;
+    if (sigTP !== undefined) {
+      hiV = Math.max(hiV, sigTP);
+      loV = Math.min(loV, sigTP);
     }
     const pad = (hiV - loV) * 0.05;
     return { lo: loV - pad, hi: hiV + pad };
-  }, [visibleCandles, currentPrice, fibLevels]);
+  }, [visibleCandles, currentPrice, fibLevels, currentSignal, activeSignal]);
 
   const plotW = chartW - RIGHT_W;
   const plotH = CHART_HEIGHT - TOP_PAD - BOT_PAD;
@@ -352,6 +370,14 @@ export function FibChart() {
           )}
           {selectedTF === "M15" && ema50Series.length > 0 && (
             <Path d={emaPath(ema50Series)} stroke="#A78BFA" strokeWidth={1.5} fill="none" opacity={0.85} />
+          )}
+
+          {/* EMA Lines — M5 view: EMA20 (momentum fast) + EMA50 (intraday trend) */}
+          {selectedTF === "M5" && m5Ema50Series.length > 0 && (
+            <Path d={emaPath(m5Ema50Series)} stroke="#A78BFA" strokeWidth={1.5} fill="none" opacity={0.85} />
+          )}
+          {selectedTF === "M5" && m5Ema20Series.length > 0 && (
+            <Path d={emaPath(m5Ema20Series)} stroke="#34D399" strokeWidth={1.5} fill="none" opacity={0.9} />
           )}
 
           {/* EMA reference lines on M5 view */}
@@ -578,8 +604,17 @@ export function FibChart() {
         <LegItem color={ZONE786_COLOR} label="78.6%" box />
         <LegItem color={TP_COLOR} label="TP" />
         <LegItem color={SL_COLOR} label="SL" />
-        <LegItem color="#A78BFA" label="EMA50" line />
-        <LegItem color="#F97316" label="EMA200" line />
+        {selectedTF === "M15" ? (
+          <>
+            <LegItem color="#A78BFA" label="EMA50 M15" line />
+            <LegItem color="#F97316" label="EMA200 M15" line />
+          </>
+        ) : (
+          <>
+            <LegItem color="#34D399" label="EMA20 M5" line />
+            <LegItem color="#A78BFA" label="EMA50 M5" line />
+          </>
+        )}
       </View>
 
       {/* Real-time PnL Panel */}

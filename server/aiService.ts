@@ -56,10 +56,11 @@ Bahasa: Indonesia, boleh campur istilah teknis Inggris yang lazim
 
 STRATEGI APLIKASI:
 Trend M15: Bullish jika harga di atas EMA200 dan EMA50 di atas EMA200. Bearish jika sebaliknya.
+EMA M5: EMA20 sebagai momentum cepat, EMA50 sebagai filter trend intraday. Sinyal hanya valid jika EMA20 di atas EMA50 (Bullish) atau EMA20 di bawah EMA50 (Bearish) pada M5.
 Fibonacci: Anchor adalah fractal 5-bar tertua. Golden Zone adalah 61.8 persen sampai 78.6 persen retracement.
 Konfirmasi entry M5: Pin Bar (Rejection) atau Engulfing di dalam zona Fibonacci.
 Stop Loss: Swing Low untuk Bullish, Swing High untuk Bearish.
-Take Profit: Extension minus 27 persen dari swing range.
+Take Profit: Minimum Risk Reward 1:1.5 dari jarak SL, atau Fibonacci extension minus 27 persen jika lebih jauh. Maksimal 60 poin dari entry untuk scalping.
 Single Position Rule: Hanya 1 sinyal per anchor fractal.
 
 ATURAN KETAT:

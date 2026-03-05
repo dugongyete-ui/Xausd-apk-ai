@@ -150,6 +150,7 @@ const M5_COUNT = 100;
 
 const ATR_PERIOD = 14;
 const M5_ATR_MIN = 0.3;
+const EMA20_PERIOD = 20;
 const EMA50_PERIOD = 50;
 const EMA200_PERIOD = 200;
 const STORAGE_KEY_SIGNALS = "fibo_signals_v2";
@@ -930,7 +931,21 @@ export function TradingProvider({ children }: { children: ReactNode }) {
     const m5ATR = calcATR(m5Candles.slice(0, -1), ATR_PERIOD);
     if (m5ATR < M5_ATR_MIN) return null;
 
-    // ③ Rejection pin bar atau Engulfing pattern (keduanya sudah diperlonggar)
+    // ③ M5 EMA confirmation — EMA20 > EMA50 bullish, EMA20 < EMA50 bearish
+    // Provides momentum filter so signals align with short-term M5 trend
+    if (m5Candles.length >= EMA50_PERIOD) {
+      const m5Closes = m5Candles.map((c) => c.close);
+      const m5Ema20 = calcEMA(m5Closes, EMA20_PERIOD);
+      const m5Ema50 = calcEMA(m5Closes, EMA50_PERIOD);
+      const lastEma20 = m5Ema20[m5Ema20.length - 1];
+      const lastEma50 = m5Ema50[m5Ema50.length - 1];
+      if (!isNaN(lastEma20) && !isNaN(lastEma50)) {
+        if (trendDir === "Bullish" && lastEma20 <= lastEma50) return null;
+        if (trendDir === "Bearish" && lastEma20 >= lastEma50) return null;
+      }
+    }
+
+    // ④ Rejection pin bar atau Engulfing pattern (keduanya sudah diperlonggar)
     const isRejection = checkRejection(closedM5, trendDir, fibLevels);
     const isEngulfing = checkEngulfing(prevM5, closedM5, trendDir);
     if (!isRejection && !isEngulfing) return null;
@@ -942,13 +957,12 @@ export function TradingProvider({ children }: { children: ReactNode }) {
     if (slDistance < atr * 0.1 || atr < 0.1) return null;
 
     // TP realistis scalping XAUUSD M5:
-    // - Floor: max(m5ATR × 2.0, 8 pts) agar tidak terlalu kecil
-    // - Cap:   max(m5ATR × 4.0, 20 pts) agar tidak terlalu jauh untuk scalping
-    // - Fibonacci extension dipakai jika jatuh dalam range tsb
+    // - Minimum RR 1:1.5 dari SL distance (scalping discipline)
+    // - Fibonacci extension digunakan jika lebih jauh dari minimum RR
+    // - Cap 60 pts dari entry agar tetap realistis untuk scalping
     const extDist = Math.abs(fibLevels.extensionNeg27 - currentPrice);
-    const tpFloor = Math.max(m5ATR * 2.0, 8);
-    const tpCap   = Math.max(m5ATR * 4.0, 20);
-    const atpDist = Math.min(Math.max(extDist, tpFloor), tpCap);
+    const minRRDist = slDistance * 1.5;
+    const atpDist = Math.min(Math.max(extDist, minRRDist, 10), 60);
     const tp = trendDir === "Bearish"
       ? currentPrice - atpDist
       : currentPrice + atpDist;

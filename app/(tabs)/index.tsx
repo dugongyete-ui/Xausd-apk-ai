@@ -563,7 +563,7 @@ export default function DashboardScreen() {
             <MaterialCommunityIcons name="finance" size={24} color={C.gold} />
             <View>
               <Text style={styles.headerTitle}>LIBARTIN</Text>
-              <Text style={styles.headerSub}>Fibonacci Analysis · XAUUSD</Text>
+              <Text style={styles.headerSub}>by Dzeck X Wakassim</Text>
             </View>
           </View>
           <LiveClock />

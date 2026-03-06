@@ -283,6 +283,9 @@ export default function SettingsScreen() {
               <MaterialCommunityIcons name="finance" size={24} color={C.gold} />
               <View style={styles.aboutText}>
                 <Text style={styles.aboutTitle}>LIBARTIN</Text>
+                <Text style={[styles.aboutSub, { fontSize: 10, color: C.gold, opacity: 0.7, marginBottom: 4 }]}>
+                  by Dzeck X Wakassim
+                </Text>
                 <Text style={styles.aboutSub}>
                   Analisis Fibonacci Deterministic untuk XAUUSD · Semua keputusan berbasis matematika murni · Tidak ada asumsi visual atau random
                 </Text>

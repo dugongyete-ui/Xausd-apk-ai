@@ -374,31 +374,49 @@ export default function AIScreen() {
       setIsStreaming(false);
     };
 
-    try {
-      // Step 1: Send message — backend queues AI and returns requestId instantly
-      const sendRes = await fetch(`${BACKEND_URL}/api/ai/chat`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: text }),
-      });
-
-      if (!sendRes.ok) {
-        const errData = await sendRes.json().catch(() => ({})) as { error?: string };
-        showError(errData.error || "AI sedang tidak tersedia. Coba lagi sebentar.");
-        return;
-      }
-
-      // Parse JSON safely — if backend returns HTML (e.g. during restart), handle gracefully
-      let sendData: { requestId?: string; queued?: boolean } = {};
+    // Helper: kirim pesan ke backend, retry 1x jika gagal (misal server baru start)
+    const sendWithRetry = async (attempt = 0): Promise<{ requestId?: string } | null> => {
       try {
-        const contentType = sendRes.headers.get("content-type") ?? "";
-        if (!contentType.includes("application/json")) {
-          showError("Server sedang restart, coba lagi dalam beberapa detik.");
-          return;
+        const res = await fetch(`${BACKEND_URL}/api/ai/chat`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ message: text }),
+        });
+        if (!res.ok) {
+          if (attempt === 0) {
+            await new Promise((r) => setTimeout(r, 2500));
+            return sendWithRetry(1);
+          }
+          const errBody = await res.text().catch(() => "");
+          console.warn("[AI] Error response:", res.status, errBody.slice(0, 100));
+          return null;
         }
-        sendData = await sendRes.json() as { requestId?: string; queued?: boolean };
-      } catch {
-        showError("Server sedang restart, coba lagi dalam beberapa detik.");
+        const raw = await res.text();
+        try {
+          return JSON.parse(raw) as { requestId?: string };
+        } catch {
+          // Non-JSON (e.g. HTML during server restart) — retry once
+          if (attempt === 0) {
+            console.warn("[AI] Non-JSON response, retrying in 3s...");
+            await new Promise((r) => setTimeout(r, 3000));
+            return sendWithRetry(1);
+          }
+          return null;
+        }
+      } catch (e) {
+        if (attempt === 0) {
+          await new Promise((r) => setTimeout(r, 2500));
+          return sendWithRetry(1);
+        }
+        return null;
+      }
+    };
+
+    try {
+      const sendData = await sendWithRetry();
+
+      if (!sendData) {
+        showError("AI tidak dapat dijangkau. Periksa koneksi atau coba lagi sebentar.");
         return;
       }
 

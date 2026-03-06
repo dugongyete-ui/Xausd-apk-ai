@@ -405,12 +405,6 @@ function checkEngulfing(prev: Candle, curr: Candle, trend: "Bullish" | "Bearish"
   return curr.close <= engulfTarget && curr.open >= prev.close - prevBody * 0.35;
 }
 
-function makeSignalKey(price: number, trend: string, epochMs: number): string {
-  const bucket = Math.floor(epochMs / (5 * 60 * 1000));
-  const zone = Math.round(price * 2) / 2;
-  return `${zone}_${trend}_${bucket}`;
-}
-
 
 function parseCandle(c: { open: string; high: string; low: string; close: string; epoch: number }): Candle | null {
   const parsed = {

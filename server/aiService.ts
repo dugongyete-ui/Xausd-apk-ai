@@ -1,6 +1,16 @@
 import https from "https";
 import type { TradingSignal, MarketStateSnapshot } from "./derivService";
 
+// ─── WIB Timezone Helper (UTC+7) ──────────────────────────────────────────────
+function toWIBString(date: Date): string {
+  const WIB_OFFSET = 7 * 60 * 60 * 1000;
+  const wib = new Date(date.getTime() + WIB_OFFSET);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const days = ["Min", "Sen", "Sel", "Rab", "Kam", "Jum", "Sab"];
+  const months = ["Jan", "Feb", "Mar", "Apr", "Mei", "Jun", "Jul", "Agu", "Sep", "Okt", "Nov", "Des"];
+  return `${days[wib.getUTCDay()]}, ${wib.getUTCDate()} ${months[wib.getUTCMonth()]} ${wib.getUTCFullYear()} ${pad(wib.getUTCHours())}:${pad(wib.getUTCMinutes())}:${pad(wib.getUTCSeconds())} WIB`;
+}
+
 const AI_HOSTNAME = "text.pollinations.ai";
 const AI_PATH = "/v1/chat/completions";
 
@@ -270,7 +280,7 @@ function buildMarketContext(snapshot: MarketStateSnapshot): string {
 
   const lines: string[] = [
     `[DATA PASAR REAL-TIME — LIBARTIN]`,
-    `Waktu: ${new Date().toUTCString()}`,
+    `Waktu: ${toWIBString(new Date())}`,
     `Harga XAUUSD: ${p !== null ? p.toFixed(2) : "Belum tersedia"}`,
     `Status Pasar: ${snapshot.marketOpen ? "Buka" : "Tutup"}`,
     `Koneksi Deriv: ${snapshot.connectionStatus}`,
@@ -358,7 +368,7 @@ class AIService {
     const full: AIMessage = {
       ...msg,
       id: `ai_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
-      timestamp: new Date().toUTCString(),
+      timestamp: toWIBString(new Date()),
     };
     this.displayMessages.unshift(full);
     if (this.displayMessages.length > this.MAX_DISPLAY_MESSAGES) {

@@ -3,6 +3,16 @@ import https from "https";
 import { aiService } from "./aiService";
 import { loadSignals, saveSignals } from "./signalStore";
 
+// ─── WIB Timezone Helper (UTC+7) ──────────────────────────────────────────────
+function toWIBString(date: Date): string {
+  const WIB_OFFSET = 7 * 60 * 60 * 1000;
+  const wib = new Date(date.getTime() + WIB_OFFSET);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const days = ["Min", "Sen", "Sel", "Rab", "Kam", "Jum", "Sab"];
+  const months = ["Jan", "Feb", "Mar", "Apr", "Mei", "Jun", "Jul", "Agu", "Sep", "Okt", "Nov", "Des"];
+  return `${days[wib.getUTCDay()]}, ${wib.getUTCDate()} ${months[wib.getUTCMonth()]} ${wib.getUTCFullYear()} ${pad(wib.getUTCHours())}:${pad(wib.getUTCMinutes())}:${pad(wib.getUTCSeconds())} WIB`;
+}
+
 // ─── Expo Push Notification API ───────────────────────────────────────────────
 const EXPO_PUSH_URL = "exp.host";
 const EXPO_PUSH_PATH = "/--/api/v2/push/send";
@@ -90,6 +100,7 @@ export interface FibLevels {
 export interface TradingSignal {
   id: string;
   pair: string;
+  timeframe: string;
   trend: "Bullish" | "Bearish";
   entryPrice: number;
   stopLoss: number;
@@ -97,9 +108,13 @@ export interface TradingSignal {
   takeProfit2?: number;
   riskReward: number;
   riskReward2?: number;
+  lotSize: number;
   timestampUTC: string;
   fibLevels: FibLevels;
+  status: "active" | "closed";
+  signalCandleEpoch: number;
   confirmationType: "rejection" | "engulfing";
+  outcome?: "win" | "loss" | "pending";
 }
 
 export type TrendState = "Bullish" | "Bearish" | "No Trade" | "Loading";
@@ -761,9 +776,15 @@ class DerivService {
     const nowMs = Date.now();
     const sigId = `${closedM5.epoch}_${trend}`;
 
+    // lotSize: kalkulasi berdasarkan default balance $10.000, risk 1% per trade
+    const defaultBalance = 10000;
+    const riskAmount = defaultBalance * 0.01;
+    const lotSize = Math.round((riskAmount / slDistance) * 100) / 100;
+
     const signal: TradingSignal = {
       id: sigId,
       pair: "XAUUSD",
+      timeframe: "M15/M5",
       trend,
       entryPrice: this.currentPrice,
       stopLoss: sl,
@@ -771,9 +792,13 @@ class DerivService {
       takeProfit2: tp2,
       riskReward: rr1,
       riskReward2: rr2,
-      timestampUTC: new Date(nowMs).toUTCString(),
+      lotSize,
+      timestampUTC: toWIBString(new Date(nowMs)),
       fibLevels: fib,
+      status: "active",
+      signalCandleEpoch: closedM5.epoch,
       confirmationType,
+      outcome: "pending",
     };
 
     // Simpan sinyal baru ke history (hanya sekali per sigId)
@@ -929,9 +954,13 @@ class DerivService {
     const zone = Math.round(params.price * 2) / 2;
     const sigId = `test_${zone}_${params.trend}_${bucket}`;
 
+    const slDist = Math.abs(params.price - params.sl);
+    const testLotSize = slDist > 0 ? Math.round((100 / slDist) * 100) / 100 : 0.01;
+
     const signal: TradingSignal = {
       id: sigId,
       pair: "XAUUSD",
+      timeframe: "M15/M5",
       trend: params.trend,
       entryPrice: params.price,
       stopLoss: params.sl,
@@ -939,7 +968,8 @@ class DerivService {
       takeProfit2: params.tp2,
       riskReward: params.rr,
       riskReward2: params.rr2,
-      timestampUTC: new Date(nowMs).toUTCString(),
+      lotSize: testLotSize,
+      timestampUTC: toWIBString(new Date(nowMs)),
       fibLevels: (params.trend === "Bullish" ? this.bullFibLevels : this.bearFibLevels) ?? {
         swingHigh: params.price + 30,
         swingLow: params.price - 30,
@@ -947,7 +977,10 @@ class DerivService {
         level786: params.price + 23,
         extensionNeg27: params.price - 8,
       },
+      status: "active",
+      signalCandleEpoch: Math.floor(nowMs / 1000),
       confirmationType: "rejection",
+      outcome: "pending",
     };
 
     this.currentSignal = signal;

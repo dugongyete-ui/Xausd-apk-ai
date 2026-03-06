@@ -23,6 +23,16 @@ import { playSignalSound, unlockAudioContext } from "@/services/SoundService";
 
 const BACKGROUND_FETCH_TASK = "libartin-bg-fetch";
 
+// ─── WIB Timezone Helper (UTC+7) ──────────────────────────────────────────────
+function toWIBString(date: Date): string {
+  const WIB_OFFSET = 7 * 60 * 60 * 1000;
+  const wib = new Date(date.getTime() + WIB_OFFSET);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const days = ["Min", "Sen", "Sel", "Rab", "Kam", "Jum", "Sab"];
+  const months = ["Jan", "Feb", "Mar", "Apr", "Mei", "Jun", "Jul", "Agu", "Sep", "Okt", "Nov", "Des"];
+  return `${days[wib.getUTCDay()]}, ${wib.getUTCDate()} ${months[wib.getUTCMonth()]} ${wib.getUTCFullYear()} ${pad(wib.getUTCHours())}:${pad(wib.getUTCMinutes())}:${pad(wib.getUTCSeconds())} WIB`;
+}
+
 if (Platform.OS !== "web") {
   TaskManager.defineTask(BACKGROUND_FETCH_TASK, async () => {
     return BackgroundFetch.BackgroundFetchResult.NewData;
@@ -1046,7 +1056,7 @@ export function TradingProvider({ children }: { children: ReactNode }) {
       riskReward: Math.round(rr1 * 100) / 100,
       riskReward2: Math.round(rr2 * 100) / 100,
       lotSize: Math.round(lotSize * 100) / 100,
-      timestampUTC: new Date(nowMs).toUTCString(),
+      timestampUTC: toWIBString(new Date(nowMs)),
       fibLevels,
       status: "active",
       signalCandleEpoch: closedM5.epoch,
@@ -1201,7 +1211,7 @@ export function TradingProvider({ children }: { children: ReactNode }) {
       riskReward: rr1Demo,
       riskReward2: rr2Demo,
       lotSize: 0.01,
-      timestampUTC: new Date().toUTCString(),
+      timestampUTC: toWIBString(new Date()),
       fibLevels: mockFib,
       status: "active",
       signalCandleEpoch: m5Candles.length > 0 ? m5Candles[m5Candles.length - 1].epoch : Math.floor(Date.now() / 1000),

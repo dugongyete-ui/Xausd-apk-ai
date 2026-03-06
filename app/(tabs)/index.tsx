@@ -24,34 +24,33 @@ function LiveClock() {
 
   const pad = (n: number) => String(n).padStart(2, "0");
 
-  // Waktu lokal
-  const hh = pad(now.getHours());
-  const mm = pad(now.getMinutes());
-  const ss = pad(now.getSeconds());
+  // WIB = UTC+7
+  const wibOffset = 7 * 60 * 60 * 1000;
+  const wibDate = new Date(now.getTime() + wibOffset);
 
-  // Tanggal
+  const wibHH = pad(wibDate.getUTCHours());
+  const wibMM = pad(wibDate.getUTCMinutes());
+  const wibSS = pad(wibDate.getUTCSeconds());
+
+  // Tanggal WIB
   const days = ["Min", "Sen", "Sel", "Rab", "Kam", "Jum", "Sab"];
   const months = ["Jan","Feb","Mar","Apr","Mei","Jun","Jul","Agu","Sep","Okt","Nov","Des"];
-  const dayName = days[now.getDay()];
-  const dateStr = `${dayName}, ${now.getDate()} ${months[now.getMonth()]} ${now.getFullYear()}`;
-
-  // UTC time
-  const utcHH = pad(now.getUTCHours());
-  const utcMM = pad(now.getUTCMinutes());
+  const dayName = days[wibDate.getUTCDay()];
+  const dateStr = `${dayName}, ${wibDate.getUTCDate()} ${months[wibDate.getUTCMonth()]} ${wibDate.getUTCFullYear()}`;
 
   return (
     <View style={clockStyles.wrapper}>
-      {/* Jam digital utama */}
+      {/* Jam digital utama (WIB) */}
       <View style={clockStyles.timeRow}>
-        <Text style={clockStyles.hhmm}>{hh}:{mm}</Text>
-        <Text style={clockStyles.ss}>{ss}</Text>
+        <Text style={clockStyles.hhmm}>{wibHH}:{wibMM}</Text>
+        <Text style={clockStyles.ss}>{wibSS}</Text>
       </View>
       {/* Tanggal */}
       <Text style={clockStyles.date}>{dateStr}</Text>
-      {/* UTC */}
+      {/* WIB label */}
       <View style={clockStyles.utcRow}>
         <View style={clockStyles.utcDot} />
-        <Text style={clockStyles.utc}>UTC {utcHH}:{utcMM}</Text>
+        <Text style={clockStyles.utc}>WIB (UTC+7)</Text>
       </View>
     </View>
   );

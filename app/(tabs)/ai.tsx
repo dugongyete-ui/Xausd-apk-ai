@@ -534,7 +534,10 @@ export default function AIScreen() {
       <View style={styles.header}>
         <View style={styles.headerLeft}>
           <View style={styles.headerDot} />
-          <Text style={styles.headerTitle}>LIBARTIN AI</Text>
+          <View>
+            <Text style={styles.headerTitle}>LIBARTIN AI</Text>
+            <Text style={styles.headerByline}>by Dzeck X Wakassim</Text>
+          </View>
         </View>
         <Text style={styles.headerSub}>XAUUSD Trading Advisor</Text>
       </View>
@@ -636,6 +639,13 @@ const styles = StyleSheet.create({
     fontSize: 15,
     color: C.gold,
     letterSpacing: 2,
+  },
+  headerByline: {
+    fontFamily: "Inter_400Regular",
+    fontSize: 9,
+    color: C.textDim,
+    letterSpacing: 0.5,
+    marginTop: 1,
   },
   headerSub: {
     fontFamily: "Inter_400Regular",

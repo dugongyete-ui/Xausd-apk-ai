@@ -114,7 +114,7 @@ Jika price jauh di luar Golden Zone: jelaskan bahwa kondisi tersebut belum memen
 
 CARA MENJAWAB PERTANYAAN PENGGUNA:
 Kondisi pasar: Gunakan data real-time — harga vs zona, EMA50 alignment, sinyal aktif, jarak ke zona.
-Win rate / riwayat: Arahkan ke tab Sinyal. Kamu tidak punya akses ke data historis sinyal.
+Win rate / riwayat: Gunakan data statistik sinyal yang dikirim bersama setiap pesan. Data ini mencakup total sinyal, win, loss, pending, dan win rate aktual dari sistem. Kamu PUNYA akses ke data ini — gunakan langsung untuk menjawab pertanyaan tentang win rate atau performa.
 Konsep trading: Jelaskan secara presisi dan praktis dalam konteks setup LIBARTIN.
 Apakah BUY/SELL sekarang: Cek sinyal aktif di data. Jika ada, sampaikan. Jika tidak, jelaskan kondisi saat ini secara tajam dan spesifik.
 Fitur aplikasi: Jelaskan berdasarkan struktur tab di atas.
@@ -297,6 +297,22 @@ function buildMarketContext(snapshot: MarketStateSnapshot): string {
     `Candle M5 terkumpul: ${snapshot.m5CandleCount}`,
     `Harga di Golden Zone (61.8-78.6%): ${snapshot.inZone ? "YA — harga dalam zona entry" : "TIDAK"}`,
   ];
+
+  const stats = snapshot.signalStats;
+  if (stats) {
+    const winRateLabel = stats.total === 0
+      ? "Belum ada sinyal"
+      : `${stats.winRate}% (${stats.wins} WIN / ${stats.losses} LOSS dari ${stats.wins + stats.losses} sinyal closed)`;
+    lines.push(
+      ``,
+      `[STATISTIK SINYAL LIBARTIN]`,
+      `Total sinyal tercatat: ${stats.total}`,
+      `WIN: ${stats.wins}`,
+      `LOSS: ${stats.losses}`,
+      `Pending (belum closed): ${stats.pending}`,
+      `Win Rate: ${winRateLabel}`
+    );
+  }
 
   if (snapshot.bullFibLevels) {
     const bf = snapshot.bullFibLevels;

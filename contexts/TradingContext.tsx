@@ -531,6 +531,26 @@ export function TradingProvider({ children }: { children: ReactNode }) {
         } catch {}
       }
 
+      // Langkah 1.5: Restore active pending signal dari backend jika ada
+      // Penting: jika user buka app di tengah trade, sinyal aktif harus tampil
+      if (BACKEND_URL) {
+        fetch(`${BACKEND_URL}/api/current-signal`)
+          .then((r) => r.json())
+          .then((data: { signal: TradingSignal | null }) => {
+            if (data.signal && data.signal.outcome === "pending") {
+              // Restore signal as activeSignal — TP/SL tracking will take over
+              setActiveSignal((prev) => {
+                if (prev) return prev; // already have one, don't overwrite
+                console.log(`[TradingContext] Restored active signal from backend: ${data.signal!.id}`);
+                return data.signal!;
+              });
+              // Also register in savedSignalKeys so dedup works
+              savedSignalKeys.current.add(data.signal.id);
+            }
+          })
+          .catch(() => {});
+      }
+
       // Langkah 2: Fetch sinyal REAL dari backend server (berjalan 24/7)
       // Backend terus generate sinyal meskipun device offline
       fetch(`${BACKEND_URL}/api/signals`)
@@ -672,7 +692,32 @@ export function TradingProvider({ children }: { children: ReactNode }) {
     };
 
     const syncTimer = setInterval(fetchAndMergeSignals, 3 * 60 * 1000);
-    return () => clearInterval(syncTimer);
+
+    // ── Periodic check: restore active pending signal from backend ────────────
+    const fetchCurrentSignal = () => {
+      if (!BACKEND_URL) return;
+      fetch(`${BACKEND_URL}/api/current-signal`)
+        .then((r) => r.json())
+        .then((data: { signal: TradingSignal | null }) => {
+          if (data.signal && data.signal.outcome === "pending") {
+            setActiveSignal((prev) => {
+              // Only restore if no active signal is being tracked locally
+              if (prev && prev.outcome === "pending") return prev;
+              if (resolvedSignalKeysRef.current.has(data.signal!.id)) return prev;
+              console.log(`[TradingContext] Periodic sync: restored pending signal ${data.signal!.id}`);
+              savedSignalKeys.current.add(data.signal!.id);
+              return data.signal!;
+            });
+          }
+        })
+        .catch(() => {});
+    };
+    const signalSyncTimer = setInterval(fetchCurrentSignal, 60 * 1000);
+
+    return () => {
+      clearInterval(syncTimer);
+      clearInterval(signalSyncTimer);
+    };
 
   }, [findLatestPendingSignal]);
 
@@ -1114,20 +1159,7 @@ export function TradingProvider({ children }: { children: ReactNode }) {
     const m5ATR = calcATR(m5Candles.slice(0, -1), ATR_PERIOD);
     if (m5ATR < M5_ATR_MIN) return null;
 
-    // ③ M5 EMA confirmation — EMA20 > EMA50 bullish, EMA20 < EMA50 bearish
-    if (m5Candles.length >= EMA50_PERIOD) {
-      const m5Closes = m5Candles.map((c) => c.close);
-      const m5Ema20 = calcEMA(m5Closes, EMA20_PERIOD);
-      const m5Ema50 = calcEMA(m5Closes, EMA50_PERIOD);
-      const lastEma20 = m5Ema20[m5Ema20.length - 1];
-      const lastEma50 = m5Ema50[m5Ema50.length - 1];
-      if (!isNaN(lastEma20) && !isNaN(lastEma50)) {
-        if (trendDir === "Bullish" && lastEma20 <= lastEma50) return null;
-        if (trendDir === "Bearish" && lastEma20 >= lastEma50) return null;
-      }
-    }
-
-    // ④ Rejection pin bar atau Engulfing pattern
+    // ③ Rejection pin bar atau Engulfing pattern
     const isRejection = checkRejection(closedM5, trendDir, fibLevels);
     const isEngulfing = checkEngulfing(prevM5, closedM5, trendDir);
     if (!isRejection && !isEngulfing) return null;

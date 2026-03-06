@@ -20,7 +20,7 @@ Iterative development dengan komunikasi jelas pada perubahan signifikan. Sebelum
 ### Backend (Express — berjalan 24/7)
 - **Server**: Port 5000, melayani landing page dan static Expo assets.
 - **DerivService** (`server/derivService.ts`): Koneksi WebSocket persisten ke Deriv yang berjalan 24/7. Menangani streaming data, analisis, dan deteksi sinyal secara terus-menerus — bahkan saat HP mati/tidak ada internet di sisi user.
-- **APIs**: `GET /api/market-state`, `GET /api/signals`, `DELETE /api/signals`, `GET /api/health`.
+- **APIs**: `GET /api/market-state`, `GET /api/signals`, `GET /api/current-signal`, `DELETE /api/signals`, `GET /api/health`, `POST /api/test-signal`.
 - **Push Notifications**: Backend mengirim Expo Push Notifications ke HP saat sinyal baru, TP hit, atau SL hit — tanpa perlu app aktif.
 - **AI Integration** (`server/aiService.ts`): AI chat service dengan contextual memory. Auto-generate rekomendasi saat sinyal BUY/SELL terdeteksi dan komentar saat TP/SL tercapai. Arsitektur fire-and-poll: `POST /api/ai/chat` langsung return (queue background), frontend poll `GET /api/ai/messages` tiap 2 detik sampai respons muncul.
 
@@ -44,10 +44,9 @@ Ketika HP dibuka kembali, app mengambil signal history dari backend — sudah ad
 2. **Swing Detection**: Fractal 5-bar hybrid pada M15 untuk anchor Fibonacci
 3. **Fibonacci Levels**: Swing High & Low → hitung 61.8%, 78.6%, extension -27%
 4. **Golden Zone**: Harga masuk zona 61.8%–78.6% (zona entry utama)
-5. **Konfirmasi M5** (TIGA syarat wajib):
-   - Harga dalam Golden Zone
-   - Pola candlestick: Pin Bar Rejection atau Engulfing pada M5
-   - EMA alignment M5: EMA20 > EMA50 (Bullish) atau EMA20 < EMA50 (Bearish)
+5. **Konfirmasi M5** (DUA syarat wajib):
+   - Harga dalam Extended Zone (50%–88.6%)
+   - Pola candlestick: Pin Bar Rejection atau Engulfing pada M5 (candle closed)
 6. **Entry**: Harga close candle M5 konfirmasi
 7. **SL**: Di bawah Swing Low (Bullish) atau di atas Swing High (Bearish)
 8. **TP1**: RR 1:1, maksimal 15 poin dari entry (scalping cepat)
@@ -99,6 +98,12 @@ Ketika HP dibuka kembali, app mengambil signal history dari backend — sudah ad
   - **`updateSignalOutcome` diperluas**: Kini bisa menambahkan sinyal langsung ke history (jika belum ada) sekaligus set outcome win/loss — satu fungsi untuk semua path.
   - **Merge sync diperbaiki**: Server sync tidak lagi menghapus sinyal lokal yang sudah resolved tapi belum ada di server (misalnya client detect TP/SL sebelum server sync). `localOnlyResolved` dipertahankan di kedua sync paths (startup + periodic).
   - **`/api/signals` hanya return resolved**: Server API kini memfilter sinyal pending dari response — hanya sinyal dengan `outcome: "win"` atau `"loss"` yang dikirim ke client.
+
+- **2026-03-06 v4**: AI upgrade + Fibonacci consistency + signal timing fixes:
+  - **AI kini punya akses win rate & statistik sinyal**: `SignalStats` interface ditambahkan ke `MarketStateSnapshot`. `getSnapshot()` menghitung wins/losses/pending/winRate dari `signalHistory`. `buildMarketContext()` di `aiService.ts` kini menyertakan blok `[STATISTIK SINYAL LIBARTIN]` dengan data real ke AI. System prompt diperbarui — AI tidak lagi diarahkan ke "tab Sinyal", sekarang bisa menjawab pertanyaan win rate langsung dari data.
+  - **FibChart zone color fix**: `FibChart.tsx` sebelumnya menggunakan `trend` (EMA makro) untuk warna zone gradient dan label "BUY/SELL ZONE". Sekarang menggunakan `fibTrend` (arah impulse Fibonacci) — variabel baru `fibIsBull`/`fibIsBear`/`activeFibTrend`. Zone emas = BUY setup, zone merah = SELL setup, selaras dengan struktur Fibonacci aktual.
+  - **Pending signal recovery on app open**: Endpoint baru `GET /api/current-signal` ditambahkan ke backend. Frontend (`TradingContext.tsx`) kini mem-fetch pending signal dari backend saat startup (Langkah 1.5) dan juga setiap 60 detik. Jika ada sinyal aktif di backend, `activeSignal` di frontend otomatis di-restore — tidak ada lagi "kosong" di dashboard saat buka app di tengah trade.
+  - **Signal detection consistency**: Hapus filter M5 EMA20/EMA50 alignment dari frontend (`TradingContext.tsx`) karena backend tidak pernah punya filter ini. Sekarang frontend dan backend pakai kondisi yang sama: zone touch + candlestick pattern saja.
 
 - **2026-03-06 v3**: Bug fix — sinyal aktif tidak tampil di dashboard + sinkronisasi install script:
   - **Fix activeSignal tidak tampil**: `activeSignal` kini di-restore dari sinyal pending terbaru di history saat startup (dari cache lokal maupun dari server). Sebelumnya, efek `setActiveSignal(null)` yang dipicu perubahan `currentAnchorEpoch` menghapus sinyal sebelum sempat tampil.

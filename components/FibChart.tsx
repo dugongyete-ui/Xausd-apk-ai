@@ -249,6 +249,12 @@ export function FibChart() {
     isBear ? "M15 BEARISH ▼" :
     trend === "Loading" ? `LOADING ${m15Candles.length}/300` : "NO TREND";
   const trendColor = isBull ? C.green : isBear ? C.red : C.textDim;
+
+  // Use fibTrend (Fibonacci setup direction) for zone coloring — NOT EMA macro trend
+  // This ensures zone shows gold for BUY setup and red for SELL setup regardless of EMA
+  const activeFibTrend = activeSig ? activeSig.trend : fibTrend;
+  const fibIsBull = activeFibTrend === "Bullish";
+  const fibIsBear = activeFibTrend === "Bearish";
   const hasNoData = candles.length === 0 && m15Candles.length === 0;
 
   const SWING_COLOR = "#C084FC";
@@ -326,7 +332,7 @@ export function FibChart() {
             );
           })}
 
-          {/* Fibonacci zone highlight (61.8%–78.6%) — visible portion only */}
+          {/* Fibonacci zone highlight (61.8%–78.6%) — uses fibTrend direction for color */}
           {fibLevels && zoneYTop !== null && zoneYBot !== null && zoneH > 0 && (
             <G>
               <Rect
@@ -334,9 +340,9 @@ export function FibChart() {
                 y={zoneYTop}
                 width={plotW}
                 height={zoneH}
-                fill={isBull ? "url(#buyZone)" : "url(#sellZone)"}
+                fill={fibIsBull ? "url(#buyZone)" : "url(#sellZone)"}
               />
-              <Line x1={0} y1={zoneYTop} x2={0} y2={zoneYBot} stroke={isBull ? C.gold : C.red} strokeWidth={2.5} opacity={0.6} />
+              <Line x1={0} y1={zoneYTop} x2={0} y2={zoneYBot} stroke={fibIsBull ? C.gold : C.red} strokeWidth={2.5} opacity={0.6} />
               {zoneH > 16 && (
                 <G>
                   <Rect
@@ -351,12 +357,12 @@ export function FibChart() {
                   <SvgText
                     x={plotW / 2}
                     y={(zoneYTop + zoneYBot) / 2 + 4}
-                    fill={isBull ? C.green : C.red}
+                    fill={fibIsBull ? C.green : C.red}
                     fontSize={9.5}
                     fontWeight="bold"
                     textAnchor="middle"
                   >
-                    {isBull ? "▲ BUY ZONE (M15 Structure)" : "▼ SELL ZONE (M15 Structure)"}
+                    {fibIsBull ? "▲ BUY ZONE (Fib Structure)" : fibIsBear ? "▼ SELL ZONE (Fib Structure)" : "FIBONACCI ZONE"}
                   </SvgText>
                 </G>
               )}

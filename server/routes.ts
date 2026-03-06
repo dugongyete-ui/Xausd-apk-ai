@@ -9,12 +9,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   app.get("/api/signals", (_req: Request, res: Response) => {
-    // Hanya kirim sinyal yang sudah resolved (win/loss)
-    // Sinyal pending tidak perlu dikirim — client track sendiri via currentSignal
     const resolved = derivService.getSignalHistory().filter(
       (s) => s.outcome === "win" || s.outcome === "loss"
     );
     res.json(resolved);
+  });
+
+  // GET /api/current-signal — returns the active pending signal (if any)
+  // Used by frontend on startup to restore activeSignal when app opens mid-trade
+  app.get("/api/current-signal", (_req: Request, res: Response) => {
+    const snapshot = derivService.getSnapshot();
+    const pending = snapshot.currentSignal && snapshot.currentSignal.outcome === "pending"
+      ? snapshot.currentSignal
+      : null;
+    res.json({ signal: pending });
   });
 
   app.delete("/api/signals", (_req: Request, res: Response) => {

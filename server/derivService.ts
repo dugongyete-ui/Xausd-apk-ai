@@ -119,6 +119,14 @@ export interface TradingSignal {
 
 export type TrendState = "Bullish" | "Bearish" | "No Trade" | "Loading";
 
+export interface SignalStats {
+  total: number;
+  wins: number;
+  losses: number;
+  pending: number;
+  winRate: number;
+}
+
 export interface MarketStateSnapshot {
   currentPrice: number | null;
   trend: TrendState;
@@ -136,6 +144,7 @@ export interface MarketStateSnapshot {
   lastUpdated: string;
   m15CandleCount: number;
   m5CandleCount: number;
+  signalStats: SignalStats;
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -945,6 +954,18 @@ class DerivService {
       inZone = checkZone(this.bullFibLevels) || checkZone(this.bearFibLevels);
     }
 
+    const wins = this.signalHistory.filter((s) => s.outcome === "win").length;
+    const losses = this.signalHistory.filter((s) => s.outcome === "loss").length;
+    const pending = this.signalHistory.filter((s) => !s.outcome || s.outcome === "pending").length;
+    const resolved = wins + losses;
+    const signalStats: SignalStats = {
+      total: this.signalHistory.length,
+      wins,
+      losses,
+      pending,
+      winRate: resolved > 0 ? Math.round((wins / resolved) * 100) : 0,
+    };
+
     return {
       currentPrice: this.currentPrice,
       trend,
@@ -962,6 +983,7 @@ class DerivService {
       lastUpdated: new Date().toUTCString(),
       m15CandleCount: this.m15Candles.length,
       m5CandleCount: this.m5Candles.length,
+      signalStats,
     };
   }
 

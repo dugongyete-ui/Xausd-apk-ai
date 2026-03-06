@@ -331,7 +331,9 @@ export default function SignalsScreen() {
         ]
       );
     } else {
-      clearHistory();
+      if (window.confirm("Hapus semua riwayat sinyal?")) {
+        clearHistory();
+      }
     }
   };
 

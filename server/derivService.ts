@@ -1,7 +1,7 @@
 import WebSocket from "ws";
 import https from "https";
 import { aiService } from "./aiService";
-import { loadSignals, saveSignals } from "./signalStore";
+import { loadSignals, saveSignals, clearAllSignals } from "./signalStore";
 
 // ─── WIB Timezone Helper (UTC+7) ──────────────────────────────────────────────
 function toWIBString(date: Date): string {
@@ -662,11 +662,42 @@ class DerivService {
     return true;
   }
 
+  // ─── MONITOR TP/SL PENDING SIGNALS ────────────────────────────────────────
+  // Jalankan setiap tick untuk update outcome sinyal pending.
+  private monitorPendingSignals(): void {
+    if (this.currentPrice === null) return;
+    const price = this.currentPrice;
+    let changed = false;
+    for (const sig of this.signalHistory) {
+      if (sig.outcome && sig.outcome !== "pending") continue;
+      const isBull = sig.trend === "Bullish";
+      const tp1Hit = isBull ? price >= sig.takeProfit : price <= sig.takeProfit;
+      const tp2Hit = sig.takeProfit2 !== undefined
+        ? (isBull ? price >= sig.takeProfit2 : price <= sig.takeProfit2)
+        : false;
+      const slHit = isBull ? price <= sig.stopLoss : price >= sig.stopLoss;
+      if (tp1Hit || tp2Hit) {
+        sig.outcome = "win";
+        changed = true;
+        console.log(`[DerivService] Signal ${sig.id} hit TP${tp2Hit ? "2" : "1"} → WIN @ ${price}`);
+        this.triggerOutcomeCommentary(sig.id, "win");
+      } else if (slHit) {
+        sig.outcome = "loss";
+        changed = true;
+        console.log(`[DerivService] Signal ${sig.id} hit SL → LOSS @ ${price}`);
+        this.triggerOutcomeCommentary(sig.id, "loss");
+      }
+    }
+    if (changed) saveSignals(this.signalHistory);
+  }
+
   // ─── MAIN ANALYSIS LOOP ───────────────────────────────────────────────────
   // Jalankan analisis KEDUA arah setiap tick/candle baru.
   // BUY dan SELL dievaluasi mandiri — keduanya bisa valid sekaligus.
   private runAnalysis() {
     if (this.m15Candles.length < EMA50_PERIOD) return;
+
+    this.monitorPendingSignals();
 
     const swings = findSwings(this.m15Candles);
 
@@ -929,6 +960,14 @@ class DerivService {
     return this.signalHistory;
   }
 
+  clearSignalHistory(): void {
+    this.signalHistory = [];
+    this.savedSignalKeys.clear();
+    this.currentSignal = null;
+    clearAllSignals();
+    console.log("[DerivService] Signal history cleared by client request");
+  }
+
   // ─── Test helper: inject signal manually ──────────────────────────────────
   injectTestSignal(params: {
     price: number;
@@ -960,13 +999,24 @@ class DerivService {
       riskReward2: params.rr2,
       lotSize: testLotSize,
       timestampUTC: toWIBString(new Date(nowMs)),
-      fibLevels: (params.trend === "Bullish" ? this.bullFibLevels : this.bearFibLevels) ?? {
-        swingHigh: params.price + 30,
-        swingLow: params.price - 30,
-        level618: params.price + 18,
-        level786: params.price + 23,
-        extensionNeg27: params.price - 8,
-      },
+      fibLevels: (() => {
+        const base = (params.trend === "Bullish" ? this.bullFibLevels : this.bearFibLevels);
+        if (!base) {
+          return {
+            swingHigh: params.trend === "Bearish" ? params.sl : params.price + 30,
+            swingLow:  params.trend === "Bullish" ? params.sl : params.price - 30,
+            level618: params.price + (params.trend === "Bullish" ? 18 : -18),
+            level786: params.price + (params.trend === "Bullish" ? 23 : -23),
+            extensionNeg27: params.price + (params.trend === "Bullish" ? -8 : 8),
+          };
+        }
+        // Pastikan swingHigh/Low konsisten dengan params.sl
+        return {
+          ...base,
+          swingHigh: params.trend === "Bearish" ? params.sl : base.swingHigh,
+          swingLow:  params.trend === "Bullish" ? params.sl : base.swingLow,
+        };
+      })(),
       status: "active",
       signalCandleEpoch: Math.floor(nowMs / 1000),
       confirmationType: "rejection",

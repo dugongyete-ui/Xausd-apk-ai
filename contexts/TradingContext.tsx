@@ -453,6 +453,8 @@ export function TradingProvider({ children }: { children: ReactNode }) {
   const derivMarketClosedRef = useRef<boolean>(false);
   // Dedup: 1 sinyal per candle M5 closed — unlimited signal tanpa cooldown waktu
   const lastSignaledCandleEpochRef = useRef<number | null>(null);
+  // Track kapan history terakhir di-clear — untuk filter sync dari server
+  const clearedAtRef = useRef<number | null>(null);
   // ─── Startup: unlock audio context on web ────────────────────────────────
   useEffect(() => {
     unlockAudioContext();
@@ -467,9 +469,12 @@ export function TradingProvider({ children }: { children: ReactNode }) {
       if (!pending) return null;
       if (price !== null) {
         const isBull = pending.trend === "Bullish";
-        const tpHit = isBull ? price >= pending.takeProfit : price <= pending.takeProfit;
+        const tp1Hit = isBull ? price >= pending.takeProfit : price <= pending.takeProfit;
+        const tp2Hit = pending.takeProfit2 !== undefined
+          ? (isBull ? price >= pending.takeProfit2 : price <= pending.takeProfit2)
+          : false;
         const slHit = isBull ? price <= pending.stopLoss : price >= pending.stopLoss;
-        if (tpHit || slHit) return null;
+        if (tp1Hit || tp2Hit || slHit) return null;
       }
       return pending;
     },
@@ -532,10 +537,17 @@ export function TradingProvider({ children }: { children: ReactNode }) {
       fetch(`${BACKEND_URL}/api/signals`)
         .then((r) => r.json())
         .then((serverSignals: TradingSignal[]) => {
-          if (!Array.isArray(serverSignals) || serverSignals.length === 0) return;
+          if (!Array.isArray(serverSignals)) return;
 
           // Merge sinyal server dengan cache lokal — server selalu lebih otoritatif
           setSignalHistory((prev) => {
+            if (serverSignals.length === 0) {
+              // Server kosong — mungkin sudah di-clear, tetap kosongkan lokal juga
+              savedSignalKeys.current.clear();
+              AsyncStorage.setItem(STORAGE_KEY_SIGNALS, JSON.stringify([])).catch(() => {});
+              return [];
+            }
+
             const existingIds = new Set(prev.map((s) => s.id));
             const newFromServer = serverSignals.filter((s) => !existingIds.has(s.id));
 
@@ -553,13 +565,20 @@ export function TradingProvider({ children }: { children: ReactNode }) {
 
             if (newFromServer.length > 0) {
               console.log(`[TradingContext] ${newFromServer.length} sinyal baru dari server (total: ${merged.length})`);
+            }
 
-              // Ada sinyal baru dari server — restore activeSignal jika belum ada
+            // Selalu sync activeSignal dengan sinyal pending terbaru dari server
+            // Jangan andalkan cachedPrice untuk TP/SL check — biarkan real-time tracker handle itu
+            const latestPending = merged.find((s) => !s.outcome || s.outcome === "pending");
+            if (latestPending) {
               setActiveSignal((prev) => {
-                if (prev) return prev;
-                return findLatestPendingSignal(merged, cachedPrice);
+                // Kalau activeSignal sudah ada dan masih pending, jangan ganti
+                if (prev && (!prev.outcome || prev.outcome === "pending")) return prev;
+                console.log(`[TradingContext] ActiveSignal synced from server: ${latestPending.id}`);
+                return latestPending;
               });
             }
+
             return merged;
           });
         })
@@ -599,25 +618,47 @@ export function TradingProvider({ children }: { children: ReactNode }) {
       fetch(`${BACKEND_URL}/api/signals`)
         .then((r) => r.json())
         .then((serverSignals: TradingSignal[]) => {
-          if (!Array.isArray(serverSignals) || serverSignals.length === 0) return;
+          if (!Array.isArray(serverSignals)) return;
+
+          // Kalau server kosong, clear lokal juga (sinkron setelah clear dari device lain)
+          if (serverSignals.length === 0) {
+            setSignalHistory((prev) => {
+              if (prev.length === 0) return prev;
+              savedSignalKeys.current.clear();
+              AsyncStorage.setItem(STORAGE_KEY_SIGNALS, JSON.stringify([])).catch(() => {});
+              return [];
+            });
+            setActiveSignal((prev) => {
+              if (!prev || prev.outcome === "win" || prev.outcome === "loss") return null;
+              return prev;
+            });
+            return;
+          }
+
           setSignalHistory((prev) => {
             const existingIds = new Set(prev.map((s) => s.id));
             const newOnes = serverSignals.filter((s) => !existingIds.has(s.id));
-            if (newOnes.length === 0) return prev;
             const merged = [...serverSignals].sort(
               (a, b) => new Date(b.timestampUTC).getTime() - new Date(a.timestampUTC).getTime()
             );
             merged.forEach((s) => savedSignalKeys.current.add(s.id));
-            AsyncStorage.setItem(STORAGE_KEY_SIGNALS, JSON.stringify(merged)).catch(() => {});
-            console.log(`[TradingContext] Sync: +${newOnes.length} sinyal baru dari server`);
 
-            // Restore activeSignal dari sinyal pending terbaru jika belum ada
-            setActiveSignal((prev) => {
-              if (prev) return prev;
-              return findLatestPendingSignal(merged, null);
-            });
+            if (newOnes.length > 0) {
+              AsyncStorage.setItem(STORAGE_KEY_SIGNALS, JSON.stringify(merged)).catch(() => {});
+              console.log(`[TradingContext] Sync: +${newOnes.length} sinyal baru dari server`);
+            }
 
-            return merged;
+            // Selalu sync activeSignal dengan sinyal pending terbaru dari server
+            const latestPending = merged.find((s) => !s.outcome || s.outcome === "pending");
+            if (latestPending) {
+              setActiveSignal((prevActive) => {
+                if (prevActive && (!prevActive.outcome || prevActive.outcome === "pending")) return prevActive;
+                console.log(`[TradingContext] Sync: activeSignal restored: ${latestPending.id}`);
+                return latestPending;
+              });
+            }
+
+            return newOnes.length > 0 ? merged : prev;
           });
         })
         .catch(() => {});
@@ -658,7 +699,13 @@ export function TradingProvider({ children }: { children: ReactNode }) {
   const clearHistory = useCallback(() => {
     setSignalHistory([]);
     savedSignalKeys.current.clear();
-    AsyncStorage.setItem(STORAGE_KEY_SIGNALS, JSON.stringify([]));
+    setActiveSignal(null);
+    clearedAtRef.current = Date.now();
+    AsyncStorage.setItem(STORAGE_KEY_SIGNALS, JSON.stringify([])).catch(() => {});
+    // Hapus juga dari server supaya tidak muncul lagi saat sync
+    if (BACKEND_URL) {
+      fetch(`${BACKEND_URL}/api/signals`, { method: "DELETE" }).catch(() => {});
+    }
   }, []);
 
   const requestNotifications = useCallback(() => {
@@ -1155,12 +1202,16 @@ export function TradingProvider({ children }: { children: ReactNode }) {
 
     const isBull = activeSignal.trend === "Bullish";
 
-    // Check TP hit
+    // Check TP1 atau TP2 hit
     if (!tpSlNotifiedRef.current.tp) {
-      const tpHit = isBull
+      const tp1Hit = isBull
         ? currentPrice >= activeSignal.takeProfit
         : currentPrice <= activeSignal.takeProfit;
-      if (tpHit) {
+      const tp2Hit = activeSignal.takeProfit2 !== undefined
+        ? (isBull ? currentPrice >= activeSignal.takeProfit2 : currentPrice <= activeSignal.takeProfit2)
+        : false;
+      if (tp1Hit || tp2Hit) {
+        const hitLevel = tp2Hit ? activeSignal.takeProfit2! : activeSignal.takeProfit;
         tpSlNotifiedRef.current.tp = true;
         tpSlNotifiedRef.current.sl = true;
         updateSignalOutcome(activeSignal.id, "win");
@@ -1177,7 +1228,7 @@ export function TradingProvider({ children }: { children: ReactNode }) {
           sendTPAlert({
             trend: activeSignal.trend,
             entryPrice: activeSignal.entryPrice,
-            takeProfit: activeSignal.takeProfit,
+            takeProfit: hitLevel,
             currentPrice,
           }).catch(() => {});
         }

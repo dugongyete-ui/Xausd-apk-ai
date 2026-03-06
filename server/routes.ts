@@ -12,6 +12,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
     res.json(derivService.getSignalHistory());
   });
 
+  app.delete("/api/signals", (_req: Request, res: Response) => {
+    derivService.clearSignalHistory();
+    res.json({ success: true, cleared: true });
+  });
+
   app.post("/api/register-token", (req: Request, res: Response) => {
     const { token } = req.body as { token?: string };
     if (!token) {

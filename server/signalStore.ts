@@ -29,3 +29,14 @@ export function saveSignals(signals: TradingSignal[]): void {
     console.error("[SignalStore] Save failed:", (e as Error).message);
   }
 }
+
+export function clearAllSignals(): void {
+  try {
+    const dir = path.dirname(STORE_PATH);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(STORE_PATH, JSON.stringify([]), "utf8");
+    console.log("[SignalStore] All signals cleared from disk");
+  } catch (e) {
+    console.error("[SignalStore] Clear failed:", (e as Error).message);
+  }
+}

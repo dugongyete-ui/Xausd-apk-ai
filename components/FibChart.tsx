@@ -112,10 +112,16 @@ function calcFloatingPnL(trend: "Bullish" | "Bearish", entryPrice: number, curre
 }
 
 export function FibChart() {
-  const { candles, m15Candles, fibLevels, fibTrend, currentPrice, currentSignal, activeSignal, trend, atr } = useTrading();
+  const { candles, m15Candles, fibLevels: ctxFibLevels, fibTrend: ctxFibTrend, currentPrice, currentSignal, activeSignal, trend, atr } = useTrading();
   const [chartW, setChartW] = useState(0);
   const [selectedTF, setSelectedTF] = useState<TF>("M15");
   const visibleCount = VISIBLE[selectedTF];
+
+  // Ketika ada sinyal aktif, gunakan fibLevels dari sinyal itu sendiri supaya
+  // garis zona (61.8 / 78.6) konsisten dengan harga entry sinyal.
+  const activeSig = currentSignal ?? activeSignal;
+  const fibLevels = (activeSig ? activeSig.fibLevels : ctxFibLevels) ?? ctxFibLevels;
+  const fibTrend  = (activeSig ? activeSig.trend   : ctxFibTrend)  ?? ctxFibTrend;
   // Chart height: responsive to screen width, fixed proportion — clean and tight
   const CHART_HEIGHT = chartW > 0 ? Math.min(400, Math.max(300, Math.round(chartW * 0.88))) : 320;
 
@@ -376,40 +382,47 @@ export function FibChart() {
           {/* ── Fibonacci Structure Lines ── */}
           {fibLevels && fibTrend && (() => {
             const trendUp = fibTrend === "Bullish";
+            const hasSignal = !!(currentSignal || activeSignal);
             return (
               <>
-                <FibLine
-                  pct={trendUp ? "0.0%" : "100%"}
-                  desc={trendUp ? "Swing High (Support)" : "Swing High (SL Ref)"}
-                  price={fibLevels.swingHigh}
-                  color={trendUp ? SWING_COLOR : SL_COLOR}
-                  lo={lo} hi={hi} plotH={plotH} plotW={plotW}
-                  dashed={false} strokeWidth={2.5}
-                />
+                {/* SwingHigh: hanya tampil jika TIDAK ada sinyal aktif, atau ini bukan sisi SL */}
+                {(!hasSignal || trendUp) && (
+                  <FibLine
+                    pct={trendUp ? "0.0%" : "100%"}
+                    desc={trendUp ? "Swing High" : "Swing High"}
+                    price={fibLevels.swingHigh}
+                    color={SWING_COLOR}
+                    lo={lo} hi={hi} plotH={plotH} plotW={plotW}
+                    dashed={false} strokeWidth={hasSignal ? 1.5 : 2.5}
+                  />
+                )}
                 <FibLine
                   pct="78.6%"
-                  desc="Deep Retracement"
+                  desc="Deep"
                   price={fibLevels.level786}
                   color={ZONE786_COLOR}
                   lo={lo} hi={hi} plotH={plotH} plotW={plotW}
-                  dashed strokeWidth={1.8}
+                  dashed strokeWidth={hasSignal ? 1.2 : 1.8}
                 />
                 <FibLine
                   pct="61.8%"
-                  desc="Golden Retracement"
+                  desc="Golden"
                   price={fibLevels.level618}
                   color={ZONE618_COLOR}
                   lo={lo} hi={hi} plotH={plotH} plotW={plotW}
-                  dashed strokeWidth={1.8}
+                  dashed strokeWidth={hasSignal ? 1.2 : 1.8}
                 />
-                <FibLine
-                  pct={trendUp ? "100%" : "0.0%"}
-                  desc={trendUp ? "Swing Low (SL Ref)" : "Swing Low (Support)"}
-                  price={fibLevels.swingLow}
-                  color={trendUp ? SL_COLOR : SWING_COLOR}
-                  lo={lo} hi={hi} plotH={plotH} plotW={plotW}
-                  dashed={false} strokeWidth={2.5}
-                />
+                {/* SwingLow: hanya tampil jika TIDAK ada sinyal aktif, atau ini bukan sisi SL */}
+                {(!hasSignal || !trendUp) && (
+                  <FibLine
+                    pct={trendUp ? "100%" : "0.0%"}
+                    desc={trendUp ? "Swing Low" : "Swing Low"}
+                    price={fibLevels.swingLow}
+                    color={SWING_COLOR}
+                    lo={lo} hi={hi} plotH={plotH} plotW={plotW}
+                    dashed={false} strokeWidth={hasSignal ? 1.5 : 2.5}
+                  />
+                )}
               </>
             );
           })()}

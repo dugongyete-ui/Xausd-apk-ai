@@ -2,10 +2,12 @@ import { isLiquidGlassAvailable } from "expo-glass-effect";
 import { Tabs } from "expo-router";
 import { NativeTabs, Icon, Label } from "expo-router/unstable-native-tabs";
 import { BlurView } from "expo-blur";
-import { Platform, StyleSheet } from "react-native";
+import { Platform, StyleSheet, View } from "react-native";
 import React from "react";
 import { Ionicons } from "@expo/vector-icons";
 import C from "@/constants/colors";
+import { SignalAlertBanner } from "@/components/SignalAlertBanner";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 function NativeTabLayout() {
   return (
@@ -105,8 +107,15 @@ function ClassicTabLayout() {
 }
 
 export default function TabLayout() {
-  if (isLiquidGlassAvailable()) {
-    return <NativeTabLayout />;
-  }
-  return <ClassicTabLayout />;
+  const insets = useSafeAreaInsets();
+  const bannerTop = Platform.OS === "web" ? 12 : (insets.top + 4);
+
+  return (
+    <View style={{ flex: 1 }}>
+      {isLiquidGlassAvailable() ? <NativeTabLayout /> : <ClassicTabLayout />}
+      <View style={[{ position: "absolute", top: bannerTop, left: 0, right: 0, zIndex: 9999 }]} pointerEvents="box-none">
+        <SignalAlertBanner />
+      </View>
+    </View>
+  );
 }

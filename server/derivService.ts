@@ -1,6 +1,7 @@
 import WebSocket from "ws";
 import https from "https";
 import { aiService } from "./aiService";
+import { loadSignals, saveSignals } from "./signalStore";
 
 // ─── Expo Push Notification API ───────────────────────────────────────────────
 const EXPO_PUSH_URL = "exp.host";
@@ -112,6 +113,8 @@ export interface MarketStateSnapshot {
   ema20m5: number | null;
   ema50m5: number | null;
   fibLevels: FibLevels | null;
+  bullFibLevels: FibLevels | null;
+  bearFibLevels: FibLevels | null;
   currentSignal: TradingSignal | null;
   inZone: boolean;
   connectionStatus: "connecting" | "connected" | "disconnected";
@@ -188,16 +191,24 @@ function calcATR(candles: Candle[], period: number): number {
 //  Downtrend: SwingHigh (start) → SwingLow (end)  anchorEpoch = SwingLow.epoch
 //
 // Fibonacci kemudian dihitung sebagai retracement dari impulse tersebut.
-function findSwings(
-  candles: Candle[]
-): { swingHigh: number; swingLow: number; anchorEpoch: number; direction: "Bullish" | "Bearish" } | null {
+interface SwingResult {
+  swingHigh: number;
+  swingLow: number;
+  anchorEpoch: number;
+}
+
+// Mengembalikan KEDUA struktur swing secara independen.
+// Bullish: SwingLow → SwingHigh (setup retracement BUY)
+// Bearish: SwingHigh → SwingLow (setup retracement SELL)
+// Keduanya dievaluasi mandiri — tidak ada yang "mengalahkan" yang lain.
+function findSwings(candles: Candle[]): { bullish: SwingResult | null; bearish: SwingResult | null } {
   const LOOKBACK = Math.min(candles.length, 120);
   const slice = candles.slice(-LOOKBACK);
   const n = slice.length;
-  if (n < 12) return null;
+  if (n < 12) return { bullish: null, bearish: null };
 
-  // Kumpulkan semua swing high dan low lokal (3-bar fractal)
-  // Tidak pakai candle terakhir (live) untuk hindari repaint
+  // Kumpulkan fractal swing high dan low lokal (3-bar)
+  // Hindari candle terakhir (live) untuk mencegah repaint
   const swingHighs: number[] = [];
   const swingLows: number[] = [];
   for (let i = 1; i < n - 1; i++) {
@@ -209,22 +220,22 @@ function findSwings(
     }
   }
 
-  // Validasi impulse wave: bersih, satu arah, tidak sideways
-  // EMA alignment dihapus agar responsif untuk scalping bi-directional
+  // Validasi impulse: bersih, satu arah, trending konsisten
+  // Span diperlebar (3–25) agar lebih banyak struktur valid terdeteksi
   function isCleanImpulse(
     fromIdx: number, toIdx: number,
     fromPrice: number, toPrice: number,
     dir: "up" | "down"
   ): boolean {
     const span = toIdx - fromIdx;
-    if (span < 5 || span > 20) return false;
+    if (span < 3 || span > 25) return false;
     const range = Math.abs(toPrice - fromPrice);
-    if (range < 8) return false;
+    if (range < 5) return false;
 
-    // Tidak ada candle yang melampaui 25% range dari ujung start (impulse bersih)
+    // Tidak ada candle yang menembus 30% range dari ujung start
     for (let j = fromIdx; j <= toIdx; j++) {
-      if (dir === "up" && slice[j].low < fromPrice - range * 0.25) return false;
-      if (dir === "down" && slice[j].high > fromPrice + range * 0.25) return false;
+      if (dir === "up" && slice[j].low < fromPrice - range * 0.30) return false;
+      if (dir === "down" && slice[j].high > fromPrice + range * 0.30) return false;
     }
 
     // Trending: rata-rata close paruh kedua lebih ekstrem dari paruh pertama
@@ -243,8 +254,8 @@ function findSwings(
     return true;
   }
 
-  // Cari impulse naik terbaru: SwingLow → SwingHigh
-  let bullResult: { swingHigh: number; swingLow: number; anchorEpoch: number; direction: "Bullish" } | null = null;
+  // ── Cari impulse NAIK terbaru: SwingLow → SwingHigh (setup BUY) ──────────
+  let bullResult: SwingResult | null = null;
   for (let hi = swingHighs.length - 1; hi >= 0; hi--) {
     const hIdx = swingHighs[hi];
     const swingHighPrice = slice[hIdx].high;
@@ -253,15 +264,15 @@ function findSwings(
       if (lIdx >= hIdx) continue;
       const swingLowPrice = slice[lIdx].low;
       if (isCleanImpulse(lIdx, hIdx, swingLowPrice, swingHighPrice, "up")) {
-        bullResult = { swingHigh: swingHighPrice, swingLow: swingLowPrice, anchorEpoch: slice[hIdx].epoch, direction: "Bullish" };
+        bullResult = { swingHigh: swingHighPrice, swingLow: swingLowPrice, anchorEpoch: slice[hIdx].epoch };
         break;
       }
     }
     if (bullResult) break;
   }
 
-  // Cari impulse turun terbaru: SwingHigh → SwingLow
-  let bearResult: { swingHigh: number; swingLow: number; anchorEpoch: number; direction: "Bearish" } | null = null;
+  // ── Cari impulse TURUN terbaru: SwingHigh → SwingLow (setup SELL) ────────
+  let bearResult: SwingResult | null = null;
   for (let li = swingLows.length - 1; li >= 0; li--) {
     const lIdx = swingLows[li];
     const swingLowPrice = slice[lIdx].low;
@@ -270,18 +281,14 @@ function findSwings(
       if (hIdx >= lIdx) continue;
       const swingHighPrice = slice[hIdx].high;
       if (isCleanImpulse(hIdx, lIdx, swingHighPrice, swingLowPrice, "down")) {
-        bearResult = { swingHigh: swingHighPrice, swingLow: swingLowPrice, anchorEpoch: slice[lIdx].epoch, direction: "Bearish" };
+        bearResult = { swingHigh: swingHighPrice, swingLow: swingLowPrice, anchorEpoch: slice[lIdx].epoch };
         break;
       }
     }
     if (bearResult) break;
   }
 
-  // Kembalikan impulse paling baru (anchorEpoch lebih tinggi = lebih baru)
-  if (bullResult && bearResult) {
-    return bullResult.anchorEpoch >= bearResult.anchorEpoch ? bullResult : bearResult;
-  }
-  return bullResult ?? bearResult ?? null;
+  return { bullish: bullResult, bearish: bearResult };
 }
 
 function calcFib(swingHigh: number, swingLow: number, trend: "Bullish" | "Bearish"): FibLevels {
@@ -409,17 +416,25 @@ class DerivService {
 
   private connectionStatus: "connecting" | "connected" | "disconnected" = "disconnected";
 
-  // anchorEpoch = fractal candle epoch. pairValue = swingLow (bearish) or swingHigh (bullish).
-  // Fibonacci updates when EITHER anchorEpoch changes (new fractal) OR pairValue changes
-  // (market made new extreme with same fractal anchor → zone shifts responsively).
-  private lastSwing: { anchorEpoch: number; direction: "Bullish" | "Bearish"; pairValue: number } | null = null;
-  private fibLevels: FibLevels | null = null;
+  // ── State Fibonacci TERPISAH per arah ──────────────────────────────────────
+  // BUY setup: berdasarkan impulse SwingLow → SwingHigh terbaru
+  private lastBullSwing: { anchorEpoch: number; pairValue: number } | null = null;
+  private bullFibLevels: FibLevels | null = null;
+  private lastBullSignaledEpoch: number | null = null;
+
+  // SELL setup: berdasarkan impulse SwingHigh → SwingLow terbaru
+  private lastBearSwing: { anchorEpoch: number; pairValue: number } | null = null;
+  private bearFibLevels: FibLevels | null = null;
+  private lastBearSignaledEpoch: number | null = null;
+
+  // fibTrend = arah sinyal aktif terakhir (untuk snapshot/display)
   private fibTrend: "Bullish" | "Bearish" | null = null;
   private currentSignal: TradingSignal | null = null;
-  // Dedup: cegah sinyal duplikat dari candle M5 yang sama
-  private lastSignaledCandleEpoch: number | null = null;
-  private signalHistory: TradingSignal[] = [];
-  private savedSignalKeys: Set<string> = new Set();
+  private signalHistory: TradingSignal[] = (() => {
+    const s = loadSignals();
+    return s;
+  })();
+  private savedSignalKeys: Set<string> = new Set(this.signalHistory.map((s) => s.id));
 
   private derivMarketClosed = false;
 
@@ -598,57 +613,99 @@ class DerivService {
     return next;
   }
 
-  // ─── FIBONACCI STABILITY RULE ─────────────────────────────────────────────
-  // Fibonacci only recalculates when a NEW swing forms.
-  // Zones remain static until market structure changes.
+  // ─── UPDATE FIBONACCI PER ARAH ────────────────────────────────────────────
+  // Fibonacci masing-masing arah diperbarui secara independen ketika:
+  // ① anchorEpoch berubah (fractal baru terbentuk), atau
+  // ② pairValue berubah (harga membuat ekstrem baru dengan anchor yang sama)
+  private updateFibForDirection(
+    dir: "Bullish" | "Bearish",
+    swing: SwingResult
+  ): boolean {
+    const pairValue = dir === "Bullish" ? swing.swingHigh : swing.swingLow;
+    const last = dir === "Bullish" ? this.lastBullSwing : this.lastBearSwing;
+
+    const anchorChanged = !last || last.anchorEpoch !== swing.anchorEpoch;
+    const pairChanged   = last && last.anchorEpoch === swing.anchorEpoch && last.pairValue !== pairValue;
+
+    if (!anchorChanged && !pairChanged) return false;
+
+    const newState = { anchorEpoch: swing.anchorEpoch, pairValue };
+    const newFib   = calcFib(swing.swingHigh, swing.swingLow, dir);
+
+    if (dir === "Bullish") {
+      this.lastBullSwing    = newState;
+      this.bullFibLevels    = newFib;
+      if (anchorChanged) this.lastBullSignaledEpoch = null;
+    } else {
+      this.lastBearSwing    = newState;
+      this.bearFibLevels    = newFib;
+      if (anchorChanged) this.lastBearSignaledEpoch = null;
+    }
+
+    const anchorDate = new Date(swing.anchorEpoch * 1000).toISOString();
+    console.log(
+      `[DerivService] Fib ${dir} updated — Anchor: ${anchorDate}, ` +
+      `High: ${swing.swingHigh}, Low: ${swing.swingLow}` +
+      `${pairChanged ? " [pair moved]" : ""}`
+    );
+    return true;
+  }
+
+  // ─── MAIN ANALYSIS LOOP ───────────────────────────────────────────────────
+  // Jalankan analisis KEDUA arah setiap tick/candle baru.
+  // BUY dan SELL dievaluasi mandiri — keduanya bisa valid sekaligus.
   private runAnalysis() {
     if (this.m15Candles.length < EMA200_PERIOD) return;
 
-    // Pastikan data cukup untuk EMA200, tapi tidak blok berdasarkan EMA trend arah
-    // Sinyal mengikuti IMPULSE TERBARU (struktur H/L), bukan EMA lagging
     const swings = findSwings(this.m15Candles);
-    if (swings) {
-      const impulseTrend = swings.direction;
-      const last = this.lastSwing;
-      const pairValue = impulseTrend === "Bearish" ? swings.swingLow : swings.swingHigh;
-      const anchorChanged = !last || last.direction !== impulseTrend || last.anchorEpoch !== swings.anchorEpoch;
-      const pairChanged  = last && last.anchorEpoch === swings.anchorEpoch && last.pairValue !== pairValue;
 
-      if (anchorChanged || pairChanged) {
-        this.lastSwing = { anchorEpoch: swings.anchorEpoch, direction: impulseTrend, pairValue };
-        this.fibLevels = calcFib(swings.swingHigh, swings.swingLow, impulseTrend);
-        this.fibTrend = impulseTrend;
-        if (anchorChanged) {
-          this.lastSignaledCandleEpoch = null;
-        }
-        const anchorDate = new Date(swings.anchorEpoch * 1000).toISOString();
-        console.log(`[DerivService] Fib updated — Anchor: ${anchorDate}, High: ${swings.swingHigh}, Low: ${swings.swingLow}, Impulse: ${impulseTrend}${pairChanged ? " [pair moved]" : ""}`);
-      }
-
-      this.detectSignal(impulseTrend);
+    // ── Update Fibonacci BUY ──────────────────────────────────────────────
+    if (swings.bullish) {
+      this.updateFibForDirection("Bullish", swings.bullish);
     } else {
-      this.lastSwing = null;
-      this.fibLevels = null;
-      this.currentSignal = null;
+      this.lastBullSwing  = null;
+      this.bullFibLevels  = null;
+    }
+
+    // ── Update Fibonacci SELL ─────────────────────────────────────────────
+    if (swings.bearish) {
+      this.updateFibForDirection("Bearish", swings.bearish);
+    } else {
+      this.lastBearSwing  = null;
+      this.bearFibLevels  = null;
+    }
+
+    // ── Evaluasi sinyal kedua arah ────────────────────────────────────────
+    const bullSignal = this.detectSignalForDirection("Bullish");
+    const bearSignal = this.detectSignalForDirection("Bearish");
+
+    // Pilih sinyal yang valid. Jika keduanya valid, ambil yang paling baru
+    // (berdasarkan epoch candle M5 konfirmasi).
+    if (bullSignal && bearSignal) {
+      const bullEpoch = this.lastBullSignaledEpoch ?? 0;
+      const bearEpoch = this.lastBearSignaledEpoch ?? 0;
+      this.currentSignal = bullEpoch >= bearEpoch ? bullSignal : bearSignal;
+    } else {
+      this.currentSignal = bullSignal ?? bearSignal ?? null;
     }
   }
 
-  private detectSignal(trend: "Bullish" | "Bearish") {
-    const anchorEpoch = this.lastSwing?.anchorEpoch ?? null;
+  // ─── DETEKSI SINYAL PER ARAH ──────────────────────────────────────────────
+  // Memeriksa satu arah (Bullish/Bearish) secara mandiri.
+  // Return TradingSignal jika valid, null jika tidak.
+  private detectSignalForDirection(trend: "Bullish" | "Bearish"): TradingSignal | null {
+    const fib           = trend === "Bullish" ? this.bullFibLevels : this.bearFibLevels;
+    const anchorEpoch   = trend === "Bullish" ? this.lastBullSwing?.anchorEpoch : this.lastBearSwing?.anchorEpoch;
+    const lastSigEpoch  = trend === "Bullish" ? this.lastBullSignaledEpoch : this.lastBearSignaledEpoch;
 
-    if (!this.fibLevels || this.m5Candles.length < 3 || this.currentPrice === null || anchorEpoch === null) {
-      this.currentSignal = null;
-      return;
+    if (!fib || !anchorEpoch || this.m5Candles.length < 3 || this.currentPrice === null) {
+      return null;
     }
 
     const atr = calcATR(this.m15Candles, ATR_PERIOD);
-    if (atr <= 0) {
-      this.currentSignal = null;
-      return;
-    }
+    if (atr <= 0) return null;
 
-    const fib = this.fibLevels;
-    // Zona diperluas untuk zone check: 50%–88.6% dari swing range
+    // Zona entry diperluas: 50%–88.6% dari swing range
     const range = Math.abs(fib.swingHigh - fib.swingLow);
     let lo: number, hi: number;
     if (trend === "Bearish") {
@@ -659,57 +716,40 @@ class DerivService {
       hi = fib.swingHigh - range * 0.50;
     }
 
-    // ① Gunakan candle CLOSED: n-2 (closed terakhir), n-3 (sebelumnya)
+    // Candle closed: gunakan n-2 (paling baru yang sudah close), n-3 (sebelumnya)
     const closedM5 = this.m5Candles[this.m5Candles.length - 2];
     const prevM5   = this.m5Candles[this.m5Candles.length - 3];
 
-    // ② Zone check: candle CLOSED menyentuh zona diperluas (50%–88.6%)
-    // Bearish SELL: high candle harus mencapai atau melewati 50% dari bawah
-    // Bullish BUY : low candle harus mencapai atau melewati 50% dari atas
-    // Juga izinkan: jika harga live (currentPrice) sudah di dalam zona
+    // Zone check: candle closed atau harga live harus menyentuh zona 50%–88.6%
     const candleTouchesZone = trend === "Bearish"
       ? closedM5.high >= lo || (this.currentPrice >= lo && this.currentPrice <= hi)
-      : closedM5.low <= hi || (this.currentPrice >= lo && this.currentPrice <= hi);
-    if (!candleTouchesZone) {
-      this.currentSignal = null;
-      return;
-    }
+      : closedM5.low <= hi  || (this.currentPrice >= lo && this.currentPrice <= hi);
+    if (!candleTouchesZone) return null;
 
-    // ④ Volatility filter: ATR M5 harus cukup besar (sangat diperlonggar)
+    // Volatility filter M5
     const m5ATR = calcATR(this.m5Candles.slice(0, -1), ATR_PERIOD);
-    if (m5ATR < M5_ATR_MIN) {
-      this.currentSignal = null;
-      return;
-    }
+    if (m5ATR < M5_ATR_MIN) return null;
 
-    // ③ Rejection pin bar atau Engulfing pattern
+    // Konfirmasi candlestick: Pin Bar Rejection atau Engulfing
     const isRejection = checkRejection(closedM5, trend, fib);
-    const isEngulfing = checkEngulfing(prevM5, closedM5, trend);
-    if (!isRejection && !isEngulfing) {
-      this.currentSignal = null;
-      return;
-    }
+    const isEngulfing  = checkEngulfing(prevM5, closedM5, trend);
+    if (!isRejection && !isEngulfing) return null;
 
     const confirmationType = isEngulfing ? "engulfing" : "rejection";
     const sl = trend === "Bullish" ? fib.swingLow : fib.swingHigh;
     const slDistance = Math.abs(this.currentPrice - sl);
-    if (slDistance < atr * 0.1) {
-      this.currentSignal = null;
-      return;
-    }
+    if (slDistance < atr * 0.1) return null;
 
-    // TP1 (scalping cepat): 1:1 RR dari SL, maks 15 pts — exit cepat sebelum pullback
+    // Dedup: satu sinyal per candle M5 closed per arah
+    if (lastSigEpoch === closedM5.epoch) return null;
+
+    // TP1 scalping: 1:1 RR, cap 15 poin
     const tp1Dist = Math.min(slDistance * 1.0, 15);
     const tp1 = trend === "Bearish"
       ? this.currentPrice - tp1Dist
       : this.currentPrice + tp1Dist;
 
-    // Dedup: 1 sinyal per candle M5 closed (bukan per waktu) — unlimited signal
-    if (this.lastSignaledCandleEpoch === closedM5.epoch) {
-      return; // Sinyal sudah pernah dihasilkan dari candle M5 yang sama
-    }
-
-    // TP2 (full target): 1.8:1 RR, cap 28 pts untuk scalping realistis
+    // TP2 full target: 1.8:1 RR, cap 28 poin
     const tp2Dist = Math.min(Math.max(slDistance * 1.8, 10), 28);
     const tp2 = trend === "Bearish"
       ? this.currentPrice - tp2Dist
@@ -736,14 +776,23 @@ class DerivService {
       confirmationType,
     };
 
-    this.currentSignal = signal;
-
+    // Simpan sinyal baru ke history (hanya sekali per sigId)
     if (!this.savedSignalKeys.has(sigId)) {
       this.savedSignalKeys.add(sigId);
-      this.lastSignaledCandleEpoch = closedM5.epoch;
+
+      // Update epoch dedup per arah
+      if (trend === "Bullish") this.lastBullSignaledEpoch = closedM5.epoch;
+      else                      this.lastBearSignaledEpoch = closedM5.epoch;
+
+      this.fibTrend = trend;
       this.signalHistory.unshift(signal);
-      if (this.signalHistory.length > 100) this.signalHistory.pop();
-      console.log(`[DerivService] NEW SIGNAL: ${trend} @ ${this.currentPrice}, TP1: ${tp1.toFixed(2)}, TP2: ${tp2.toFixed(2)}, RR: ${rr1}/${rr2}`);
+      if (this.signalHistory.length > 500) this.signalHistory.pop();
+      saveSignals(this.signalHistory);
+      console.log(
+        `[DerivService] NEW ${trend.toUpperCase()} SIGNAL @ ${this.currentPrice}, ` +
+        `TP1: ${tp1.toFixed(2)}, TP2: ${tp2.toFixed(2)}, RR: ${rr1}/${rr2}, ` +
+        `Konfirmasi: ${confirmationType}`
+      );
 
       // ── Kirim Push Notification ke semua device terdaftar ─────────────────
       const isBull = trend === "Bullish";
@@ -779,6 +828,8 @@ class DerivService {
         console.error("[AIService] Signal recommendation error:", e)
       );
     }
+
+    return signal;
   }
 
   // ─── AI Outcome Commentary ─────────────────────────────────────────────────
@@ -821,11 +872,21 @@ class DerivService {
 
     const trend = this.m15Candles.length >= EMA200_PERIOD ? getTrend(this.m15Candles) : "Loading";
 
+    // Tentukan fib aktif untuk display: pakai fib arah sinyal aktif,
+    // atau fib yang paling baru dari kedua arah jika tidak ada sinyal.
+    const activeFib: FibLevels | null = this.currentSignal
+      ? (this.currentSignal.trend === "Bullish" ? this.bullFibLevels : this.bearFibLevels)
+      : (this.bullFibLevels ?? this.bearFibLevels);
+
     let inZone = false;
-    if (this.fibLevels && this.currentPrice !== null) {
-      const lo = Math.min(this.fibLevels.level618, this.fibLevels.level786);
-      const hi = Math.max(this.fibLevels.level618, this.fibLevels.level786);
-      inZone = this.currentPrice >= lo && this.currentPrice <= hi;
+    if (this.currentPrice !== null) {
+      const checkZone = (fib: FibLevels | null) => {
+        if (!fib) return false;
+        const lo = Math.min(fib.level618, fib.level786);
+        const hi = Math.max(fib.level618, fib.level786);
+        return this.currentPrice! >= lo && this.currentPrice! <= hi;
+      };
+      inZone = checkZone(this.bullFibLevels) || checkZone(this.bearFibLevels);
     }
 
     return {
@@ -836,7 +897,9 @@ class DerivService {
       ema200,
       ema20m5,
       ema50m5,
-      fibLevels: this.fibLevels,
+      fibLevels: activeFib,
+      bullFibLevels: this.bullFibLevels,
+      bearFibLevels: this.bearFibLevels,
       currentSignal: this.currentSignal,
       inZone,
       connectionStatus: this.connectionStatus,
@@ -877,7 +940,7 @@ class DerivService {
       riskReward: params.rr,
       riskReward2: params.rr2,
       timestampUTC: new Date(nowMs).toUTCString(),
-      fibLevels: this.fibLevels ?? {
+      fibLevels: (params.trend === "Bullish" ? this.bullFibLevels : this.bearFibLevels) ?? {
         swingHigh: params.price + 30,
         swingLow: params.price - 30,
         level618: params.price + 18,

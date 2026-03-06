@@ -165,7 +165,6 @@ const STORAGE_KEY_SIGNALS = "fibo_signals_v2";
 const STORAGE_KEY_BALANCE = "fibo_balance_v1";
 const STORAGE_KEY_M15 = "fibo_m15_candles_v2";
 const STORAGE_KEY_M5 = "fibo_m5_candles_v2";
-const STORAGE_KEY_LAST_ONLINE = "fibo_last_online_v1";
 
 // ─── Market hours ───────────────────────────────────────────────────────────
 function forexMarketOpen(): boolean {
@@ -250,100 +249,87 @@ function calcATR(candles: Candle[], period: number): number {
 //  Downtrend: SwingHigh (start) → SwingLow (end)  anchorEpoch = SwingLow.epoch
 //
 // Fibonacci kemudian dihitung sebagai retracement dari impulse tersebut.
-function findSwings(
-  candles: Candle[]
-): { swingHigh: number; swingLow: number; anchorEpoch: number; direction: "Bullish" | "Bearish" } | null {
+interface SwingResult {
+  swingHigh: number;
+  swingLow: number;
+  anchorEpoch: number;
+}
+
+// Mengembalikan KEDUA struktur swing secara independen.
+// Bullish: SwingLow → SwingHigh (setup retracement BUY)
+// Bearish: SwingHigh → SwingLow (setup retracement SELL)
+function findSwings(candles: Candle[]): { bullish: SwingResult | null; bearish: SwingResult | null } {
   const LOOKBACK = Math.min(candles.length, 120);
   const slice = candles.slice(-LOOKBACK);
   const n = slice.length;
-  if (n < 12) return null;
+  if (n < 12) return { bullish: null, bearish: null };
 
-  // Kumpulkan semua swing high dan low lokal (3-bar fractal)
-  // Tidak pakai candle terakhir (live) untuk hindari repaint
   const swingHighs: number[] = [];
   const swingLows: number[] = [];
   for (let i = 1; i < n - 1; i++) {
-    if (slice[i].high > slice[i - 1].high && slice[i].high > slice[i + 1].high) {
-      swingHighs.push(i);
-    }
-    if (slice[i].low < slice[i - 1].low && slice[i].low < slice[i + 1].low) {
-      swingLows.push(i);
-    }
+    if (slice[i].high > slice[i - 1].high && slice[i].high > slice[i + 1].high) swingHighs.push(i);
+    if (slice[i].low < slice[i - 1].low && slice[i].low < slice[i + 1].low)   swingLows.push(i);
   }
 
-  // Validasi impulse wave: bersih, satu arah, tidak sideways
-  // EMA alignment dihapus agar responsif untuk scalping bi-directional
   function isCleanImpulse(
     fromIdx: number, toIdx: number,
     fromPrice: number, toPrice: number,
     dir: "up" | "down"
   ): boolean {
     const span = toIdx - fromIdx;
-    if (span < 5 || span > 20) return false;
+    if (span < 3 || span > 25) return false;
     const range = Math.abs(toPrice - fromPrice);
-    if (range < 8) return false;
-
-    // Tidak ada candle yang melampaui 25% range dari ujung start (impulse bersih)
+    if (range < 5) return false;
     for (let j = fromIdx; j <= toIdx; j++) {
-      if (dir === "up" && slice[j].low < fromPrice - range * 0.25) return false;
-      if (dir === "down" && slice[j].high > fromPrice + range * 0.25) return false;
+      if (dir === "up"   && slice[j].low  < fromPrice - range * 0.30) return false;
+      if (dir === "down" && slice[j].high > fromPrice + range * 0.30) return false;
     }
-
-    // Trending: rata-rata close paruh kedua lebih ekstrem dari paruh pertama
     const mid = fromIdx + Math.floor(span / 2);
     let sumA = 0, cntA = 0, sumB = 0, cntB = 0;
     for (let j = fromIdx; j <= toIdx; j++) {
       if (j <= mid) { sumA += slice[j].close; cntA++; }
-      else { sumB += slice[j].close; cntB++; }
+      else          { sumB += slice[j].close; cntB++; }
     }
     if (cntA === 0 || cntB === 0) return false;
-    const avgA = sumA / cntA;
-    const avgB = sumB / cntB;
-    if (dir === "up" && avgB <= avgA) return false;
+    const avgA = sumA / cntA, avgB = sumB / cntB;
+    if (dir === "up"   && avgB <= avgA) return false;
     if (dir === "down" && avgB >= avgA) return false;
-
     return true;
   }
 
-  // Cari impulse naik terbaru: SwingLow → SwingHigh
-  let bullResult: { swingHigh: number; swingLow: number; anchorEpoch: number; direction: "Bullish" } | null = null;
+  // ── Cari impulse NAIK terbaru: SwingLow → SwingHigh (BUY) ────────────────
+  let bullResult: SwingResult | null = null;
   for (let hi = swingHighs.length - 1; hi >= 0; hi--) {
     const hIdx = swingHighs[hi];
     const swingHighPrice = slice[hIdx].high;
     for (let li = swingLows.length - 1; li >= 0; li--) {
       const lIdx = swingLows[li];
       if (lIdx >= hIdx) continue;
-      const swingLowPrice = slice[lIdx].low;
-      if (isCleanImpulse(lIdx, hIdx, swingLowPrice, swingHighPrice, "up")) {
-        bullResult = { swingHigh: swingHighPrice, swingLow: swingLowPrice, anchorEpoch: slice[hIdx].epoch, direction: "Bullish" };
+      if (isCleanImpulse(lIdx, hIdx, slice[lIdx].low, swingHighPrice, "up")) {
+        bullResult = { swingHigh: swingHighPrice, swingLow: slice[lIdx].low, anchorEpoch: slice[hIdx].epoch };
         break;
       }
     }
     if (bullResult) break;
   }
 
-  // Cari impulse turun terbaru: SwingHigh → SwingLow
-  let bearResult: { swingHigh: number; swingLow: number; anchorEpoch: number; direction: "Bearish" } | null = null;
+  // ── Cari impulse TURUN terbaru: SwingHigh → SwingLow (SELL) ──────────────
+  let bearResult: SwingResult | null = null;
   for (let li = swingLows.length - 1; li >= 0; li--) {
     const lIdx = swingLows[li];
     const swingLowPrice = slice[lIdx].low;
     for (let hi = swingHighs.length - 1; hi >= 0; hi--) {
       const hIdx = swingHighs[hi];
       if (hIdx >= lIdx) continue;
-      const swingHighPrice = slice[hIdx].high;
-      if (isCleanImpulse(hIdx, lIdx, swingHighPrice, swingLowPrice, "down")) {
-        bearResult = { swingHigh: swingHighPrice, swingLow: swingLowPrice, anchorEpoch: slice[lIdx].epoch, direction: "Bearish" };
+      if (isCleanImpulse(hIdx, lIdx, slice[hIdx].high, swingLowPrice, "down")) {
+        bearResult = { swingHigh: slice[hIdx].high, swingLow: swingLowPrice, anchorEpoch: slice[lIdx].epoch };
         break;
       }
     }
     if (bearResult) break;
   }
 
-  // Kembalikan impulse paling baru (anchorEpoch lebih tinggi = lebih baru)
-  if (bullResult && bearResult) {
-    return bullResult.anchorEpoch >= bearResult.anchorEpoch ? bullResult : bearResult;
-  }
-  return bullResult ?? bearResult ?? null;
+  return { bullish: bullResult, bearish: bearResult };
 }
 
 function calcFib(swingHigh: number, swingLow: number, trend: "Bullish" | "Bearish"): FibLevels {
@@ -425,174 +411,6 @@ function makeSignalKey(price: number, trend: string, epochMs: number): string {
   return `${zone}_${trend}_${bucket}`;
 }
 
-// ─── Offline Signal Simulator ─────────────────────────────────────────────────
-// Simulates price movement and detects signals for periods when the device was
-// offline. Uses a seeded LCG + Box-Muller transform for reproducible random walks
-// based on the last cached ATR and candle data.
-function simulateOfflineSignals(
-  baseM15: Candle[],
-  baseM5: Candle[],
-  offlineDurationMs: number,
-  balance: number,
-  existingKeys: Set<string>
-): TradingSignal[] {
-  if (offlineDurationMs < 10 * 60 * 1000) return [];
-  if (baseM15.length < EMA200_PERIOD + 5 || baseM5.length < EMA50_PERIOD) return [];
-
-  const atr14 = calcATR(baseM15, ATR_PERIOD);
-  if (atr14 < 0.3) return [];
-
-  const capMs = Math.min(offlineDurationMs, 48 * 60 * 60 * 1000);
-  const M5_STEP = 300;
-  const M15_STEP = 900;
-  const numM5 = Math.floor(capMs / (M5_STEP * 1000));
-  if (numM5 < 3) return [];
-
-  const lastM5 = baseM5[baseM5.length - 1];
-  const lastM15 = baseM15[baseM15.length - 1];
-
-  // Seeded LCG for reproducibility (same offline period → same signals)
-  let rngSeed = (lastM5.epoch ^ Math.floor(offlineDurationMs / 60000)) >>> 0;
-  const nextRng = (): number => {
-    rngSeed = (Math.imul(rngSeed | 0, 1664525) + 1013904223) | 0;
-    return ((rngSeed >>> 0) / 0x100000000);
-  };
-  const randn = (): number => {
-    const u1 = Math.max(nextRng(), 1e-10);
-    const u2 = nextRng();
-    return Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
-  };
-
-  // Price sigma per M5 candle (ATR14 is per M15; M5 ≈ 1/3 of M15 variance)
-  const sigma = (atr14 / Math.sqrt(3)) * 0.55;
-
-  const simM5: Candle[] = [...baseM5];
-  const simM15: Candle[] = [...baseM15];
-
-  let price = lastM5.close;
-  let m5Epoch = lastM5.epoch + M5_STEP;
-  let m15Epoch = lastM15.epoch + M15_STEP;
-
-  // Buffer for aggregating 3×M5 into 1×M15
-  let m15Buf: number[] = [];
-  let m15Hi = price;
-  let m15Lo = price;
-  let m15Open = price;
-
-  const results: TradingSignal[] = [];
-  let activeGen: { signal: TradingSignal; tp: number; sl: number; isBull: boolean } | null = null;
-  let lastSigEpochMs = 0;
-
-  for (let i = 0; i < numM5; i++) {
-    const move = randn() * sigma;
-    price = Math.max(price + move, 1);
-
-    const hl = atr14 / Math.sqrt(3) * (0.35 + nextRng() * 0.4);
-    const candleHigh = price + hl * (0.4 + nextRng() * 0.4);
-    const candleLow = price - hl * (0.4 + nextRng() * 0.4);
-    const candleOpen = price - move * (0.3 + nextRng() * 0.4);
-
-    const m5c: Candle = {
-      open: Math.max(candleOpen, 1),
-      high: Math.max(candleHigh, price, candleOpen),
-      low: Math.min(candleLow, price, candleOpen),
-      close: price,
-      epoch: m5Epoch,
-    };
-    simM5.push(m5c);
-    if (simM5.length > M5_COUNT) simM5.shift();
-
-    m15Buf.push(price);
-    m15Hi = Math.max(m15Hi, m5c.high);
-    m15Lo = Math.min(m15Lo, m5c.low);
-
-    if (m15Buf.length === 3) {
-      const m15c: Candle = { open: m15Open, high: m15Hi, low: m15Lo, close: price, epoch: m15Epoch };
-      simM15.push(m15c);
-      if (simM15.length > M15_COUNT) simM15.shift();
-      m15Epoch += M15_STEP;
-      m15Buf = [];
-      m15Hi = price;
-      m15Lo = price;
-      m15Open = price;
-    }
-
-    // ── Check if active simulated signal hit TP or SL ──
-    if (activeGen) {
-      const tpHit = activeGen.isBull ? price >= activeGen.tp : price <= activeGen.tp;
-      const slHit = activeGen.isBull ? price <= activeGen.sl : price >= activeGen.sl;
-      if (tpHit || slHit) {
-        results.push({ ...activeGen.signal, outcome: tpHit ? "win" : "loss", status: "closed" });
-        activeGen = null;
-      }
-    }
-
-    // ── Try to detect new signal (cooldown 30 min between signals) ──
-    const nowMs = m5Epoch * 1000;
-    if (!activeGen && simM5.length >= 3 && simM15.length >= EMA200_PERIOD + 5 &&
-        nowMs - lastSigEpochMs >= 30 * 60 * 1000) {
-
-      const swings = findSwings(simM15);
-      if (swings) {
-        const swingTrend = swings.direction;
-        const fib = calcFib(swings.swingHigh, swings.swingLow, swingTrend);
-        const closedM5 = simM5[simM5.length - 2];
-        const prevM5 = simM5[simM5.length - 3];
-
-        const isRej = checkRejection(closedM5, swingTrend, fib);
-        const isEng = checkEngulfing(prevM5, closedM5, swingTrend);
-
-        if (isRej || isEng) {
-          const slLvl = swingTrend === "Bullish" ? fib.swingLow : fib.swingHigh;
-          const slDist = Math.abs(price - slLvl);
-          const m5Atr = calcATR(simM5.slice(0, -1), ATR_PERIOD);
-
-          if (slDist >= m5Atr * 0.1 && m5Atr >= M5_ATR_MIN) {
-            const tp1Dist = Math.min(slDist, 15);
-            const tp1 = swingTrend === "Bullish" ? price + tp1Dist : price - tp1Dist;
-            const tp2Dist = Math.min(Math.max(slDist * 1.8, 10), 28);
-            const tp2 = swingTrend === "Bullish" ? price + tp2Dist : price - tp2Dist;
-
-            const sigKey = makeSignalKey(price, swingTrend, nowMs);
-            if (!existingKeys.has(sigKey)) {
-              const sig: TradingSignal = {
-                id: sigKey,
-                pair: "XAUUSD",
-                timeframe: "M15/M5",
-                trend: swingTrend,
-                entryPrice: price,
-                stopLoss: slLvl,
-                takeProfit: tp1,
-                takeProfit2: tp2,
-                riskReward: Math.round((tp1Dist / slDist) * 100) / 100,
-                riskReward2: Math.round((tp2Dist / slDist) * 100) / 100,
-                lotSize: Math.round((balance * 0.01 / slDist) * 100) / 100,
-                timestampUTC: new Date(nowMs).toUTCString(),
-                fibLevels: fib,
-                status: "active",
-                signalCandleEpoch: closedM5.epoch,
-                confirmationType: isEng ? "engulfing" : "rejection",
-                outcome: "pending",
-              };
-              activeGen = { signal: sig, tp: tp1, sl: slLvl, isBull: swingTrend === "Bullish" };
-              lastSigEpochMs = nowMs;
-              existingKeys.add(sigKey);
-            }
-          }
-        }
-      }
-    }
-
-    m5Epoch += M5_STEP;
-  }
-
-  // Signal that never hit TP/SL in simulation stays as pending
-  if (activeGen) {
-    results.push({ ...activeGen.signal, outcome: "pending" });
-  }
-
-  return results;
-}
 
 function parseCandle(c: { open: string; high: string; low: string; close: string; epoch: number }): Candle | null {
   const parsed = {
@@ -633,97 +451,87 @@ export function TradingProvider({ children }: { children: ReactNode }) {
   const derivMarketClosedRef = useRef<boolean>(false);
   // Dedup: 1 sinyal per candle M5 closed — unlimited signal tanpa cooldown waktu
   const lastSignaledCandleEpochRef = useRef<number | null>(null);
-  // Track last swing: anchorEpoch (fractal candle epoch) + pairValue (swingLow/swingHigh).
-  // Fibonacci updates when EITHER anchor changes (new fractal) OR pairValue changes
-  // (market made new extreme → zone shifts responsively).
-  const lastSwingRef = useRef<{ anchorEpoch: number; trend: string; pairValue: number } | null>(null);
-
   // ─── Startup: unlock audio context on web ────────────────────────────────
   useEffect(() => {
     unlockAudioContext();
   }, []);
 
-  // ─── Startup: load all cached data instantly ──────────────────────────────
+  // ─── Startup: load cached data + fetch real signals dari backend ──────────
   useEffect(() => {
-    const startupTime = Date.now();
-
-    // Load everything in parallel then run offline simulation
+    // Langkah 1: Tampilkan data cache (AsyncStorage) secepatnya
     Promise.all([
       AsyncStorage.getItem(STORAGE_KEY_SIGNALS),
       AsyncStorage.getItem(STORAGE_KEY_BALANCE),
       AsyncStorage.getItem(STORAGE_KEY_M15),
       AsyncStorage.getItem(STORAGE_KEY_M5),
-      AsyncStorage.getItem(STORAGE_KEY_LAST_ONLINE),
-    ]).then(([sigRaw, balRaw, m15Raw, m5Raw, lastOnlineRaw]) => {
-      // Signal history
-      let existingSignals: TradingSignal[] = [];
+    ]).then(([sigRaw, balRaw, m15Raw, m5Raw]) => {
+      // Sinyal dari cache — ditampilkan langsung (offline fallback)
       if (sigRaw) {
         try {
-          existingSignals = JSON.parse(sigRaw) as TradingSignal[];
-          setSignalHistory(existingSignals);
-          existingSignals.forEach((s) => {
-            savedSignalKeys.current.add(
-              makeSignalKey(s.entryPrice, s.trend, new Date(s.timestampUTC).getTime())
-            );
-          });
+          const cached = JSON.parse(sigRaw) as TradingSignal[];
+          setSignalHistory(cached);
+          cached.forEach((s) => savedSignalKeys.current.add(s.id));
+          console.log(`[TradingContext] Loaded ${cached.length} cached signals`);
         } catch {}
       }
 
       // Balance
       if (balRaw) setBalanceState(parseFloat(balRaw) || 10000);
-      const bal = balRaw ? (parseFloat(balRaw) || 10000) : 10000;
 
       // M15 candles
-      let cachedM15: Candle[] = [];
       if (m15Raw) {
         try {
           const parsed: Candle[] = JSON.parse(m15Raw);
-          if (parsed.length >= EMA200_PERIOD) {
-            cachedM15 = parsed;
-            setM15Candles(parsed);
-          }
+          if (parsed.length >= EMA200_PERIOD) setM15Candles(parsed);
         } catch {}
       }
 
       // M5 candles
-      let cachedM5: Candle[] = [];
       if (m5Raw) {
         try {
           const parsed: Candle[] = JSON.parse(m5Raw);
           if (parsed.length > 0) {
-            cachedM5 = parsed;
             setM5Candles(parsed);
             setCurrentPrice(parsed[parsed.length - 1].close);
           }
         } catch {}
       }
 
-      // ── Offline signal simulation ─────────────────────────────────────────
-      const lastOnlineMs = lastOnlineRaw ? parseInt(lastOnlineRaw, 10) : 0;
-      const offlineDurationMs = lastOnlineMs > 0 ? startupTime - lastOnlineMs : 0;
+      // Langkah 2: Fetch sinyal REAL dari backend server (berjalan 24/7)
+      // Backend terus generate sinyal meskipun device offline
+      fetch(`${BACKEND_URL}/api/signals`)
+        .then((r) => r.json())
+        .then((serverSignals: TradingSignal[]) => {
+          if (!Array.isArray(serverSignals) || serverSignals.length === 0) return;
 
-      if (offlineDurationMs > 10 * 60 * 1000 && cachedM15.length > 0 && cachedM5.length > 0) {
-        console.log(`[TradingContext] Offline for ${Math.round(offlineDurationMs / 60000)} min — running simulation`);
-        const keyCopy = new Set(savedSignalKeys.current);
-        const simSignals = simulateOfflineSignals(cachedM15, cachedM5, offlineDurationMs, bal, keyCopy);
-
-        if (simSignals.length > 0) {
-          console.log(`[TradingContext] Simulation generated ${simSignals.length} signals`);
-          simSignals.forEach((s) => savedSignalKeys.current.add(s.id));
+          // Merge sinyal server dengan cache lokal — server selalu lebih otoritatif
           setSignalHistory((prev) => {
-            const next = [...simSignals, ...prev];
-            AsyncStorage.setItem(STORAGE_KEY_SIGNALS, JSON.stringify(next)).catch(() => {});
-            return next;
-          });
-        }
-      }
+            const existingIds = new Set(prev.map((s) => s.id));
+            const newFromServer = serverSignals.filter((s) => !existingIds.has(s.id));
 
-      // Save current time as last online timestamp
-      AsyncStorage.setItem(STORAGE_KEY_LAST_ONLINE, String(startupTime)).catch(() => {});
-    }).catch(() => {
-      // Fallback: still save last online time
-      AsyncStorage.setItem(STORAGE_KEY_LAST_ONLINE, String(startupTime)).catch(() => {});
-    });
+            // Gabungkan, urutkan dari yang paling baru
+            const merged = [...serverSignals];
+            merged.sort((a, b) =>
+              new Date(b.timestampUTC).getTime() - new Date(a.timestampUTC).getTime()
+            );
+
+            // Update savedSignalKeys
+            merged.forEach((s) => savedSignalKeys.current.add(s.id));
+
+            // Cache ke AsyncStorage untuk offline berikutnya
+            AsyncStorage.setItem(STORAGE_KEY_SIGNALS, JSON.stringify(merged)).catch(() => {});
+
+            if (newFromServer.length > 0) {
+              console.log(`[TradingContext] ${newFromServer.length} sinyal baru dari server (total: ${merged.length})`);
+            }
+            return merged;
+          });
+        })
+        .catch(() => {
+          // Device offline — tetap pakai cache, tidak masalah
+          console.log("[TradingContext] Tidak bisa fetch dari server, pakai cache lokal");
+        });
+    }).catch(() => {});
 
     // Request notification permission + register push token dengan backend
     if (Platform.OS !== "web") {
@@ -746,6 +554,34 @@ export function TradingProvider({ children }: { children: ReactNode }) {
         startOnBoot: true,
       }).catch(() => {});
     }
+
+    // ── Periodic sync: fetch sinyal real dari server setiap 3 menit ──────────
+    // Memastikan sinyal yang di-generate server saat device offline
+    // akan langsung muncul setelah device kembali online.
+    const fetchAndMergeSignals = () => {
+      if (!BACKEND_URL) return;
+      fetch(`${BACKEND_URL}/api/signals`)
+        .then((r) => r.json())
+        .then((serverSignals: TradingSignal[]) => {
+          if (!Array.isArray(serverSignals) || serverSignals.length === 0) return;
+          setSignalHistory((prev) => {
+            const existingIds = new Set(prev.map((s) => s.id));
+            const newOnes = serverSignals.filter((s) => !existingIds.has(s.id));
+            if (newOnes.length === 0) return prev;
+            const merged = [...serverSignals].sort(
+              (a, b) => new Date(b.timestampUTC).getTime() - new Date(a.timestampUTC).getTime()
+            );
+            merged.forEach((s) => savedSignalKeys.current.add(s.id));
+            AsyncStorage.setItem(STORAGE_KEY_SIGNALS, JSON.stringify(merged)).catch(() => {});
+            console.log(`[TradingContext] Sync: +${newOnes.length} sinyal baru dari server`);
+            return merged;
+          });
+        })
+        .catch(() => {});
+    };
+
+    const syncTimer = setInterval(fetchAndMergeSignals, 3 * 60 * 1000);
+    return () => clearInterval(syncTimer);
 
   }, []);
 
@@ -812,8 +648,6 @@ export function TradingProvider({ children }: { children: ReactNode }) {
 
     ws.onopen = () => {
       setConnectionStatus("connected");
-      // Update last-online timestamp whenever WS successfully connects
-      AsyncStorage.setItem(STORAGE_KEY_LAST_ONLINE, String(Date.now())).catch(() => {});
 
       // Subscribe M15 — structure
       ws.send(JSON.stringify({
@@ -1038,60 +872,89 @@ export function TradingProvider({ children }: { children: ReactNode }) {
     return calcATR(m15Candles, ATR_PERIOD);
   }, [m15Candles]);
 
-  // ─── FIBONACCI STABILITY RULE ─────────────────────────────────────────────
-  // Fibonacci zones are STATIC — they only update when a NEW swing forms on M15.
-  // This prevents the zones from jumping around on every candle tick.
-  const [fibLevels, setFibLevels] = useState<FibLevels | null>(null);
+  // ─── FIBONACCI DUAL-DIRECTION ─────────────────────────────────────────────
+  // Dua set Fibonacci terpisah: BUY (impulse naik) dan SELL (impulse turun).
+  // Masing-masing update mandiri ketika struktur swing berubah.
+  const [bullFibLevels, setBullFibLevels] = useState<FibLevels | null>(null);
+  const [bearFibLevels, setBearFibLevels] = useState<FibLevels | null>(null);
   const [fibTrend, setFibTrend] = useState<"Bullish" | "Bearish" | null>(null);
-  // currentAnchorEpoch dipakai oleh currentSignal memo untuk single position rule
   const [currentAnchorEpoch, setCurrentAnchorEpoch] = useState<number | null>(null);
+  const lastBullSwingRef = useRef<{ anchorEpoch: number; pairValue: number } | null>(null);
+  const lastBearSwingRef = useRef<{ anchorEpoch: number; pairValue: number } | null>(null);
 
   useEffect(() => {
     if (m15Candles.length < EMA200_PERIOD) {
-      if (lastSwingRef.current !== null) {
-        lastSwingRef.current = null;
-        setFibLevels(null);
-        setFibTrend(null);
-        setCurrentAnchorEpoch(null);
-      }
+      lastBullSwingRef.current = null;
+      lastBearSwingRef.current = null;
+      setBullFibLevels(null);
+      setBearFibLevels(null);
       return;
     }
 
-    // Cari impulse paling baru tanpa peduli EMA trend arah (bi-directional scalping)
     const swings = findSwings(m15Candles);
-    if (!swings) {
-      if (lastSwingRef.current !== null) {
-        lastSwingRef.current = null;
-        setFibLevels(null);
-        setFibTrend(null);
-        setCurrentAnchorEpoch(null);
+
+    // ── Update Fibonacci BUY ───────────────────────────────────────────────
+    if (swings.bullish) {
+      const { swingHigh, swingLow, anchorEpoch } = swings.bullish;
+      const pairValue = swingHigh;
+      const last = lastBullSwingRef.current;
+      const anchorChanged = !last || last.anchorEpoch !== anchorEpoch;
+      const pairChanged = last && last.anchorEpoch === anchorEpoch && last.pairValue !== pairValue;
+      if (anchorChanged || pairChanged) {
+        lastBullSwingRef.current = { anchorEpoch, pairValue };
+        setBullFibLevels(calcFib(swingHigh, swingLow, "Bullish"));
+        if (anchorChanged && (!swings.bearish || anchorEpoch >= (swings.bearish?.anchorEpoch ?? 0))) {
+          setCurrentAnchorEpoch(anchorEpoch);
+          setFibTrend("Bullish");
+        }
       }
-      return;
+    } else {
+      lastBullSwingRef.current = null;
+      setBullFibLevels(null);
     }
 
-    const impulseTrend = swings.direction;
-    const last = lastSwingRef.current;
-    const pairValue = impulseTrend === "Bearish" ? swings.swingLow : swings.swingHigh;
-    const anchorChanged = !last || last.trend !== impulseTrend || last.anchorEpoch !== swings.anchorEpoch;
-    const pairChanged  = last && last.anchorEpoch === swings.anchorEpoch && last.pairValue !== pairValue;
-
-    if (anchorChanged || pairChanged) {
-      lastSwingRef.current = { anchorEpoch: swings.anchorEpoch, trend: impulseTrend, pairValue };
-      if (anchorChanged) {
-        setCurrentAnchorEpoch(swings.anchorEpoch);
-        setFibTrend(impulseTrend);
+    // ── Update Fibonacci SELL ──────────────────────────────────────────────
+    if (swings.bearish) {
+      const { swingHigh, swingLow, anchorEpoch } = swings.bearish;
+      const pairValue = swingLow;
+      const last = lastBearSwingRef.current;
+      const anchorChanged = !last || last.anchorEpoch !== anchorEpoch;
+      const pairChanged = last && last.anchorEpoch === anchorEpoch && last.pairValue !== pairValue;
+      if (anchorChanged || pairChanged) {
+        lastBearSwingRef.current = { anchorEpoch, pairValue };
+        setBearFibLevels(calcFib(swingHigh, swingLow, "Bearish"));
+        if (anchorChanged && (!swings.bullish || anchorEpoch >= (swings.bullish?.anchorEpoch ?? 0))) {
+          setCurrentAnchorEpoch(anchorEpoch);
+          setFibTrend("Bearish");
+        }
       }
-      setFibLevels(calcFib(swings.swingHigh, swings.swingLow, impulseTrend));
+    } else {
+      lastBearSwingRef.current = null;
+      setBearFibLevels(null);
     }
   }, [m15Candles]);
 
-  // Is current M5 price inside M15 Fibonacci zone?
+  // fibLevels: arah yang paling aktif (untuk display chart)
+  const fibLevels = useMemo((): FibLevels | null => {
+    if (bullFibLevels && bearFibLevels) {
+      const bullAnchor = lastBullSwingRef.current?.anchorEpoch ?? 0;
+      const bearAnchor = lastBearSwingRef.current?.anchorEpoch ?? 0;
+      return bearAnchor >= bullAnchor ? bearFibLevels : bullFibLevels;
+    }
+    return bullFibLevels ?? bearFibLevels;
+  }, [bullFibLevels, bearFibLevels]);
+
+  // Is current M5 price inside either Fibonacci zone?
   const inZone = useMemo(() => {
-    if (!fibLevels || currentPrice === null) return false;
-    const lo = Math.min(fibLevels.level618, fibLevels.level786);
-    const hi = Math.max(fibLevels.level618, fibLevels.level786);
-    return currentPrice >= lo && currentPrice <= hi;
-  }, [fibLevels, currentPrice]);
+    if (currentPrice === null) return false;
+    const check = (fib: FibLevels | null) => {
+      if (!fib) return false;
+      const lo = Math.min(fib.level618, fib.level786);
+      const hi = Math.max(fib.level618, fib.level786);
+      return currentPrice >= lo && currentPrice <= hi;
+    };
+    return check(bullFibLevels) || check(bearFibLevels);
+  }, [bullFibLevels, bearFibLevels, currentPrice]);
 
   // ─── Signal detection: M15 zone + M5 confirmation — UNLIMITED ────────────
   // ① Evaluasi candle M5 CLOSED (m5Candles[n-2])

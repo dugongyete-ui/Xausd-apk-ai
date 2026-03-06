@@ -92,6 +92,14 @@ Ketika HP dibuka kembali, app mengambil signal history dari backend — sudah ad
 
 ## Recent Changes
 
+- **2026-03-06 v4**: Auto AI toast notification + signal history cleanup:
+  - **AIToast** (`components/AIToast.tsx`): Komponen baru — floating notification bubble yang muncul dari atas layar secara otomatis saat AI mengirim pesan baru (sinyal terdeteksi, TP hit, SL hit). Auto-dismiss setelah 6 detik. Ketuk untuk buka AI Chat tab. Warna berbeda: hijau (BUY signal/TP win), merah (SELL signal), orange (SL loss).
+  - **Root layout**: `AIToast` ditambahkan ke `app/_layout.tsx` sehingga notifikasi muncul di semua screen/tab.
+  - **Pending signals tidak masuk history**: Sinyal pending TIDAK lagi disimpan ke `signalHistory` saat pertama muncul. Baru masuk history setelah TP/SL tercapai dengan outcome `win`/`loss`. Ini memastikan tab Sinyal hanya menampilkan sinyal yang sudah resolved.
+  - **`updateSignalOutcome` diperluas**: Kini bisa menambahkan sinyal langsung ke history (jika belum ada) sekaligus set outcome win/loss — satu fungsi untuk semua path.
+  - **Merge sync diperbaiki**: Server sync tidak lagi menghapus sinyal lokal yang sudah resolved tapi belum ada di server (misalnya client detect TP/SL sebelum server sync). `localOnlyResolved` dipertahankan di kedua sync paths (startup + periodic).
+  - **`/api/signals` hanya return resolved**: Server API kini memfilter sinyal pending dari response — hanya sinyal dengan `outcome: "win"` atau `"loss"` yang dikirim ke client.
+
 - **2026-03-06 v3**: Bug fix — sinyal aktif tidak tampil di dashboard + sinkronisasi install script:
   - **Fix activeSignal tidak tampil**: `activeSignal` kini di-restore dari sinyal pending terbaru di history saat startup (dari cache lokal maupun dari server). Sebelumnya, efek `setActiveSignal(null)` yang dipicu perubahan `currentAnchorEpoch` menghapus sinyal sebelum sempat tampil.
   - **Fix anchor-change effect**: Efek yang memantau `currentAnchorEpoch` tidak lagi langsung menghapus `activeSignal`. Sinyal pending dipertahankan sampai TP/SL benar-benar tercapai. Hanya sinyal yang sudah resolved (win/loss) yang dihapus.

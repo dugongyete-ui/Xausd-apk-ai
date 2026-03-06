@@ -147,7 +147,7 @@ interface TradingContextValue {
   marketNextOpen: string;
   notificationEnabled: boolean;
   requestNotifications: () => void;
-  updateSignalOutcome: (id: string, outcome: "win" | "loss") => void;
+  updateSignalOutcome: (id: string, outcome: "win" | "loss", signalData?: TradingSignal) => void;
   injectDemoSignal: (type: "BUY" | "SELL") => void;
   clearDemoSignal: () => void;
 }
@@ -455,6 +455,10 @@ export function TradingProvider({ children }: { children: ReactNode }) {
   const lastSignaledCandleEpochRef = useRef<number | null>(null);
   // Track kapan history terakhir di-clear — untuk filter sync dari server
   const clearedAtRef = useRef<number | null>(null);
+  // Lock sinyal per candle epoch — mencegah Entry/TP/SL bergerak setiap tick
+  const lockedSignalRef = useRef<TradingSignal | null>(null);
+  // IDs sinyal yang sudah resolved (win/loss) — jangan emit ulang dari useMemo
+  const resolvedSignalKeysRef = useRef<Set<string>>(new Set());
   // ─── Startup: unlock audio context on web ────────────────────────────────
   useEffect(() => {
     unlockAudioContext();
@@ -515,20 +519,15 @@ export function TradingProvider({ children }: { children: ReactNode }) {
         } catch {}
       }
 
-      // Sinyal dari cache — ditampilkan langsung (offline fallback)
+      // Sinyal dari cache — hanya load sinyal yang sudah resolved (win/loss)
+      // Sinyal pending tidak di-restore saat startup — hilang jika belum kena TP/SL
       if (sigRaw) {
         try {
-          const cached = JSON.parse(sigRaw) as TradingSignal[];
+          const allCached = JSON.parse(sigRaw) as TradingSignal[];
+          const cached = allCached.filter((s) => s.outcome === "win" || s.outcome === "loss");
           setSignalHistory(cached);
           cached.forEach((s) => savedSignalKeys.current.add(s.id));
-          console.log(`[TradingContext] Loaded ${cached.length} cached signals`);
-
-          // Restore activeSignal dari sinyal pending terbaru di cache
-          const pending = findLatestPendingSignal(cached, cachedPrice);
-          if (pending) {
-            setActiveSignal(pending);
-            console.log(`[TradingContext] ActiveSignal restored from cache: ${pending.id}`);
-          }
+          console.log(`[TradingContext] Loaded ${cached.length} resolved signals from cache (${allCached.length - cached.length} pending discarded)`);
         } catch {}
       }
 
@@ -548,11 +547,15 @@ export function TradingProvider({ children }: { children: ReactNode }) {
               return [];
             }
 
-            const existingIds = new Set(prev.map((s) => s.id));
-            const newFromServer = serverSignals.filter((s) => !existingIds.has(s.id));
+            const serverIds = new Set(serverSignals.map((s) => s.id));
+            const newFromServer = serverSignals.filter((s) => !savedSignalKeys.current.has(s.id));
 
-            // Gabungkan, urutkan dari yang paling baru
-            const merged = [...serverSignals];
+            // Gabungkan: server otoritatif untuk shared IDs,
+            // tapi pertahankan sinyal lokal yang sudah resolved tapi belum di server
+            const localOnlyResolved = prev.filter(
+              (s) => !serverIds.has(s.id) && (s.outcome === "win" || s.outcome === "loss")
+            );
+            const merged = [...serverSignals, ...localOnlyResolved];
             merged.sort((a, b) =>
               new Date(b.timestampUTC).getTime() - new Date(a.timestampUTC).getTime()
             );
@@ -567,17 +570,16 @@ export function TradingProvider({ children }: { children: ReactNode }) {
               console.log(`[TradingContext] ${newFromServer.length} sinyal baru dari server (total: ${merged.length})`);
             }
 
-            // Selalu sync activeSignal dengan sinyal pending terbaru dari server
-            // Jangan andalkan cachedPrice untuk TP/SL check — biarkan real-time tracker handle itu
-            const latestPending = merged.find((s) => !s.outcome || s.outcome === "pending");
-            if (latestPending) {
-              setActiveSignal((prev) => {
-                // Kalau activeSignal sudah ada dan masih pending, jangan ganti
-                if (prev && (!prev.outcome || prev.outcome === "pending")) return prev;
-                console.log(`[TradingContext] ActiveSignal synced from server: ${latestPending.id}`);
-                return latestPending;
-              });
-            }
+            // Jika activeSignal di-client sudah resolved di server, hapus activeSignal
+            setActiveSignal((prev) => {
+              if (!prev) return null;
+              const serverVersion = merged.find((s) => s.id === prev.id);
+              if (serverVersion && (serverVersion.outcome === "win" || serverVersion.outcome === "loss")) {
+                console.log(`[TradingContext] ActiveSignal cleared — server says ${serverVersion.outcome}: ${prev.id}`);
+                return null;
+              }
+              return prev;
+            });
 
             return merged;
           });
@@ -636,9 +638,13 @@ export function TradingProvider({ children }: { children: ReactNode }) {
           }
 
           setSignalHistory((prev) => {
-            const existingIds = new Set(prev.map((s) => s.id));
-            const newOnes = serverSignals.filter((s) => !existingIds.has(s.id));
-            const merged = [...serverSignals].sort(
+            const serverIds = new Set(serverSignals.map((s) => s.id));
+            const newOnes = serverSignals.filter((s) => !savedSignalKeys.current.has(s.id));
+            // Pertahankan sinyal lokal yang sudah resolved tapi belum di server
+            const localOnlyResolved = prev.filter(
+              (s) => !serverIds.has(s.id) && (s.outcome === "win" || s.outcome === "loss")
+            );
+            const merged = [...serverSignals, ...localOnlyResolved].sort(
               (a, b) => new Date(b.timestampUTC).getTime() - new Date(a.timestampUTC).getTime()
             );
             merged.forEach((s) => savedSignalKeys.current.add(s.id));
@@ -648,17 +654,18 @@ export function TradingProvider({ children }: { children: ReactNode }) {
               console.log(`[TradingContext] Sync: +${newOnes.length} sinyal baru dari server`);
             }
 
-            // Selalu sync activeSignal dengan sinyal pending terbaru dari server
-            const latestPending = merged.find((s) => !s.outcome || s.outcome === "pending");
-            if (latestPending) {
-              setActiveSignal((prevActive) => {
-                if (prevActive && (!prevActive.outcome || prevActive.outcome === "pending")) return prevActive;
-                console.log(`[TradingContext] Sync: activeSignal restored: ${latestPending.id}`);
-                return latestPending;
-              });
-            }
+            // Jika activeSignal sudah resolved di server, hapus dari client
+            setActiveSignal((prevActive) => {
+              if (!prevActive) return null;
+              const serverVersion = merged.find((s) => s.id === prevActive.id);
+              if (serverVersion && (serverVersion.outcome === "win" || serverVersion.outcome === "loss")) {
+                console.log(`[TradingContext] Sync: activeSignal cleared — server says ${serverVersion.outcome}`);
+                return null;
+              }
+              return prevActive;
+            });
 
-            return newOnes.length > 0 ? merged : prev;
+            return merged.length !== prev.length || newOnes.length > 0 ? merged : prev;
           });
         })
         .catch(() => {});
@@ -686,11 +693,22 @@ export function TradingProvider({ children }: { children: ReactNode }) {
     });
   }, []);
 
-  const updateSignalOutcome = useCallback((id: string, outcome: "win" | "loss") => {
+  const updateSignalOutcome = useCallback((id: string, outcome: "win" | "loss", signalData?: TradingSignal) => {
     setSignalHistory((prev) => {
-      const updated = prev.map((s) =>
-        s.id === id ? { ...s, outcome, status: "closed" as const } : s
-      );
+      const exists = prev.find((s) => s.id === id);
+      let updated: TradingSignal[];
+      if (exists) {
+        updated = prev.map((s) =>
+          s.id === id ? { ...s, outcome, status: "closed" as const } : s
+        );
+      } else if (signalData) {
+        // Sinyal belum ada di history (masih pending) — tambahkan langsung dengan outcome resolved
+        const resolved: TradingSignal = { ...signalData, outcome, status: "closed" as const };
+        updated = [resolved, ...prev];
+        savedSignalKeys.current.add(id);
+      } else {
+        return prev;
+      }
       AsyncStorage.setItem(STORAGE_KEY_SIGNALS, JSON.stringify(updated));
       return updated;
     });
@@ -699,6 +717,8 @@ export function TradingProvider({ children }: { children: ReactNode }) {
   const clearHistory = useCallback(() => {
     setSignalHistory([]);
     savedSignalKeys.current.clear();
+    resolvedSignalKeysRef.current.clear();
+    lockedSignalRef.current = null;
     setActiveSignal(null);
     clearedAtRef.current = Date.now();
     AsyncStorage.setItem(STORAGE_KEY_SIGNALS, JSON.stringify([])).catch(() => {});
@@ -1042,13 +1062,13 @@ export function TradingProvider({ children }: { children: ReactNode }) {
 
   // ─── Signal detection: M15 zone + M5 confirmation — UNLIMITED ────────────
   // ① Evaluasi candle M5 CLOSED (m5Candles[n-2])
-  // ② Zone check diperluas: 50%–88.6% dari swing range
-  // ③ Rejection: wick ≥ 0.8× body, Engulfing: partial 75% engulf
+  // ② Zone check berdasarkan candle closed (tidak bergerak dengan live price)
+  // ③ Entry/TP/SL dihitung dari closedM5.close — TIDAK bergerak setiap tick
   // ④ Dedup: 1 sinyal per candle M5 closed (epoch-based), tanpa cooldown waktu
   const currentSignal = useMemo((): TradingSignal | null => {
     if (
       !fibLevels || !fibTrend || !atr || atr <= 0 ||
-      m5Candles.length < 3 || currentPrice === null ||
+      m5Candles.length < 3 ||
       marketState === "closed" || currentAnchorEpoch === null
     ) return null;
 
@@ -1056,6 +1076,18 @@ export function TradingProvider({ children }: { children: ReactNode }) {
     const closedM5 = m5Candles[m5Candles.length - 2];
     const prevM5   = m5Candles[m5Candles.length - 3];
     const trendDir = fibTrend;
+
+    // Signal ID berdasarkan epoch candle M5 — dedup alami
+    const sigKey = `${closedM5.epoch}_${trendDir}`;
+
+    // Jika sinyal ini sudah resolved (win/loss), jangan emit ulang
+    if (resolvedSignalKeysRef.current.has(sigKey)) return null;
+
+    // Jika sinyal untuk candle ini sudah dikunci (locked), kembalikan versi terkunci
+    // supaya Entry/TP/SL tidak bergerak setiap tick
+    if (lockedSignalRef.current?.id === sigKey) {
+      return lockedSignalRef.current;
+    }
 
     // Zona diperluas: 50%–88.6%
     const range = Math.abs(fibLevels.swingHigh - fibLevels.swingLow);
@@ -1068,18 +1100,21 @@ export function TradingProvider({ children }: { children: ReactNode }) {
       hi = fibLevels.swingHigh - range * 0.50;
     }
 
-    // ② Zone check diperluas + izinkan harga live di dalam zona
+    // ② Zone check: hanya berdasarkan candle closed (bukan live price)
     const candleTouchesZone = trendDir === "Bearish"
-      ? closedM5.high >= lo || (currentPrice >= lo && currentPrice <= hi)
-      : closedM5.low <= hi || (currentPrice >= lo && currentPrice <= hi);
-    if (!candleTouchesZone) return null;
+      ? closedM5.high >= lo
+      : closedM5.low <= hi;
+    if (!candleTouchesZone) {
+      // Zona tidak tersentuh — bersihkan locked signal jika ada
+      if (lockedSignalRef.current) lockedSignalRef.current = null;
+      return null;
+    }
 
     // Volatility filter: sangat diperlonggar
     const m5ATR = calcATR(m5Candles.slice(0, -1), ATR_PERIOD);
     if (m5ATR < M5_ATR_MIN) return null;
 
     // ③ M5 EMA confirmation — EMA20 > EMA50 bullish, EMA20 < EMA50 bearish
-    // Provides momentum filter so signals align with short-term M5 trend
     if (m5Candles.length >= EMA50_PERIOD) {
       const m5Closes = m5Candles.map((c) => c.close);
       const m5Ema20 = calcEMA(m5Closes, EMA20_PERIOD);
@@ -1092,7 +1127,7 @@ export function TradingProvider({ children }: { children: ReactNode }) {
       }
     }
 
-    // ④ Rejection pin bar atau Engulfing pattern (keduanya sudah diperlonggar)
+    // ④ Rejection pin bar atau Engulfing pattern
     const isRejection = checkRejection(closedM5, trendDir, fibLevels);
     const isEngulfing = checkEngulfing(prevM5, closedM5, trendDir);
     if (!isRejection && !isEngulfing) return null;
@@ -1100,20 +1135,23 @@ export function TradingProvider({ children }: { children: ReactNode }) {
     const confirmationType: ConfirmationType = isEngulfing ? "engulfing" : "rejection";
 
     const sl = trendDir === "Bullish" ? fibLevels.swingLow : fibLevels.swingHigh;
-    const slDistance = Math.abs(currentPrice - sl);
+
+    // Gunakan harga penutupan candle M5 sebagai entry — TIDAK bergerak setiap tick
+    const entryPrice = closedM5.close;
+    const slDistance = Math.abs(entryPrice - sl);
     if (slDistance < atr * 0.1 || atr < 0.1) return null;
 
-    // TP1 (scalping cepat): 1:1 RR dari SL, maks 15 pts — exit cepat sebelum pullback
+    // TP1 (scalping cepat): 1:1 RR dari SL, maks 15 pts
     const tp1Dist = Math.min(slDistance * 1.0, 15);
     const tp1 = trendDir === "Bearish"
-      ? currentPrice - tp1Dist
-      : currentPrice + tp1Dist;
+      ? entryPrice - tp1Dist
+      : entryPrice + tp1Dist;
 
-    // TP2 (full target): 1.8:1 RR, cap 28 pts untuk scalping realistis
+    // TP2 (full target): 1.8:1 RR, cap 28 pts
     const tp2Dist = Math.min(Math.max(slDistance * 1.8, 10), 28);
     const tp2 = trendDir === "Bearish"
-      ? currentPrice - tp2Dist
-      : currentPrice + tp2Dist;
+      ? entryPrice - tp2Dist
+      : entryPrice + tp2Dist;
 
     const riskAmount = balance * 0.01;
     const lotSize = riskAmount / slDistance;
@@ -1121,15 +1159,13 @@ export function TradingProvider({ children }: { children: ReactNode }) {
     const rr2 = tp2Dist / slDistance;
 
     const nowMs = Date.now();
-    // Signal ID berdasarkan epoch candle M5 — dedup alami tanpa cooldown waktu
-    const sigKey = `${closedM5.epoch}_${trendDir}`;
 
-    return {
+    const signal: TradingSignal = {
       id: sigKey,
       pair: "XAUUSD",
       timeframe: "M15/M5",
       trend: trendDir,
-      entryPrice: currentPrice,
+      entryPrice,
       stopLoss: sl,
       takeProfit: tp1,
       takeProfit2: tp2,
@@ -1143,16 +1179,20 @@ export function TradingProvider({ children }: { children: ReactNode }) {
       confirmationType,
       outcome: "pending",
     };
-  }, [fibLevels, fibTrend, atr, currentPrice, m5Candles, balance, marketState, currentAnchorEpoch]);
+
+    // Kunci sinyal supaya harga tidak bergerak pada tick berikutnya
+    lockedSignalRef.current = signal;
+    return signal;
+  }, [fibLevels, fibTrend, atr, m5Candles, balance, marketState, currentAnchorEpoch]);
 
   useEffect(() => {
     if (currentSignal) {
-      saveSignal(currentSignal, currentSignal.id);
       lastSignaledCandleEpochRef.current = currentSignal.signalCandleEpoch ?? null;
-      // Simpan sebagai activeSignal untuk TP/SL tracking
+      // Set as activeSignal untuk TP/SL tracking di dashboard
+      // JANGAN simpan ke signalHistory — hanya masuk history setelah TP/SL resolved
       setActiveSignal(currentSignal);
     }
-  }, [currentSignal?.id, saveSignal]);
+  }, [currentSignal?.id]);
 
   // Ketika anchor baru terbentuk, hanya clear activeSignal jika sudah resolved
   // (outcome win/loss). Jika masih pending, biarkan TP/SL tracker yang handle.
@@ -1214,7 +1254,9 @@ export function TradingProvider({ children }: { children: ReactNode }) {
         const hitLevel = tp2Hit ? activeSignal.takeProfit2! : activeSignal.takeProfit;
         tpSlNotifiedRef.current.tp = true;
         tpSlNotifiedRef.current.sl = true;
-        updateSignalOutcome(activeSignal.id, "win");
+        resolvedSignalKeysRef.current.add(activeSignal.id);
+        lockedSignalRef.current = null;
+        updateSignalOutcome(activeSignal.id, "win", activeSignal);
         setActiveSignal(null);
         playSignalSound("tp").catch(() => {});
         if (BACKEND_URL) {
@@ -1243,7 +1285,9 @@ export function TradingProvider({ children }: { children: ReactNode }) {
       if (slHit) {
         tpSlNotifiedRef.current.sl = true;
         tpSlNotifiedRef.current.tp = true;
-        updateSignalOutcome(activeSignal.id, "loss");
+        resolvedSignalKeysRef.current.add(activeSignal.id);
+        lockedSignalRef.current = null;
+        updateSignalOutcome(activeSignal.id, "loss", activeSignal);
         setActiveSignal(null);
         playSignalSound("sl").catch(() => {});
         if (BACKEND_URL) {

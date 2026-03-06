@@ -119,7 +119,9 @@ export function FibChart() {
 
   // Ketika ada sinyal aktif, gunakan fibLevels dari sinyal itu sendiri supaya
   // garis zona (61.8 / 78.6) konsisten dengan harga entry sinyal.
-  const activeSig = currentSignal ?? activeSignal;
+  // Jangan tampilkan sinyal yang sudah resolved (win/loss) di chart
+  const rawActiveSig = currentSignal ?? activeSignal;
+  const activeSig = (rawActiveSig?.outcome === "win" || rawActiveSig?.outcome === "loss") ? null : rawActiveSig;
   const fibLevels = (activeSig ? activeSig.fibLevels : ctxFibLevels) ?? ctxFibLevels;
   const fibTrend  = (activeSig ? activeSig.trend   : ctxFibTrend)  ?? ctxFibTrend;
   // Chart height: responsive to screen width, fixed proportion — clean and tight
@@ -198,19 +200,19 @@ export function FibChart() {
       hiV = Math.max(hiV, fibLevels.swingHigh);
       loV = Math.min(loV, fibLevels.swingLow);
     }
-    const sigTP = currentSignal?.takeProfit ?? activeSignal?.takeProfit;
+    const sigTP = activeSig?.takeProfit;
     if (sigTP !== undefined) {
       hiV = Math.max(hiV, sigTP);
       loV = Math.min(loV, sigTP);
     }
-    const sigTP2 = currentSignal?.takeProfit2 ?? activeSignal?.takeProfit2;
+    const sigTP2 = activeSig?.takeProfit2;
     if (sigTP2 !== undefined) {
       hiV = Math.max(hiV, sigTP2);
       loV = Math.min(loV, sigTP2);
     }
     const pad = (hiV - loV) * 0.05;
     return { lo: loV - pad, hi: hiV + pad };
-  }, [visibleCandles, currentPrice, fibLevels, currentSignal, activeSignal]);
+  }, [visibleCandles, currentPrice, fibLevels, activeSig]);
 
   const plotW = chartW - RIGHT_W;
   const plotH = CHART_HEIGHT - TOP_PAD - BOT_PAD;
@@ -382,7 +384,7 @@ export function FibChart() {
           {/* ── Fibonacci Structure Lines ── */}
           {fibLevels && fibTrend && (() => {
             const trendUp = fibTrend === "Bullish";
-            const hasSignal = !!(currentSignal || activeSignal);
+            const hasSignal = !!activeSig;
             return (
               <>
                 {/* SwingHigh: hanya tampil jika TIDAK ada sinyal aktif, atau ini bukan sisi SL */}
@@ -454,8 +456,8 @@ export function FibChart() {
           })}
 
           {/* ── Signal candle highlight + BUY/SELL badge ── */}
-          {(currentSignal || activeSignal) && (() => {
-            const sig = currentSignal ?? activeSignal!;
+          {activeSig && (() => {
+            const sig = activeSig;
             const idx = visibleCandles.findIndex((c) => c.epoch === sig.signalCandleEpoch);
             const signalIsBull = sig.trend === "Bullish";
             const col = signalIsBull ? C.green : C.red;
@@ -539,8 +541,8 @@ export function FibChart() {
           })()}
 
           {/* ── Signal levels (Entry / SL / TP1 / TP2) ── */}
-          {(currentSignal || activeSignal) && (() => {
-            const lvl = currentSignal ?? activeSignal!;
+          {activeSig && (() => {
+            const lvl = activeSig;
             return (
               <>
                 <FibLine
@@ -622,15 +624,15 @@ export function FibChart() {
       </View>
 
       {/* Real-time PnL Panel */}
-      {activeSignal && currentPrice !== null && (() => {
-        const pnl = calcFloatingPnL(activeSignal.trend, activeSignal.entryPrice, currentPrice);
+      {activeSig && currentPrice !== null && (() => {
+        const pnl = calcFloatingPnL(activeSig.trend, activeSig.entryPrice, currentPrice);
         const isProfit = pnl >= 0;
-        const isBullSig = activeSignal.trend === "Bullish";
+        const isBullSig = activeSig.trend === "Bullish";
         const dirColor = isBullSig ? C.green : C.red;
         const pnlColor = isProfit ? C.green : C.red;
         const priceDiff = isBullSig
-          ? currentPrice - activeSignal.entryPrice
-          : activeSignal.entryPrice - currentPrice;
+          ? currentPrice - activeSig.entryPrice
+          : activeSig.entryPrice - currentPrice;
         return (
           <View style={[styles.pnlPanel, { borderColor: pnlColor + "50", backgroundColor: pnlColor + "12" }]}>
             <View style={styles.pnlLeft}>
@@ -639,7 +641,7 @@ export function FibChart() {
               </View>
               <View style={styles.pnlPriceCol}>
                 <Text style={styles.pnlPriceLabel}>Entry</Text>
-                <Text style={[styles.pnlPriceVal, { color: dirColor }]}>{activeSignal.entryPrice.toFixed(2)}</Text>
+                <Text style={[styles.pnlPriceVal, { color: dirColor }]}>{activeSig.entryPrice.toFixed(2)}</Text>
               </View>
               <View style={styles.pnlPriceCol}>
                 <Text style={styles.pnlPriceLabel}>Now</Text>

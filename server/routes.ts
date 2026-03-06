@@ -9,7 +9,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   app.get("/api/signals", (_req: Request, res: Response) => {
-    res.json(derivService.getSignalHistory());
+    // Hanya kirim sinyal yang sudah resolved (win/loss)
+    // Sinyal pending tidak perlu dikirim — client track sendiri via currentSignal
+    const resolved = derivService.getSignalHistory().filter(
+      (s) => s.outcome === "win" || s.outcome === "loss"
+    );
+    res.json(resolved);
   });
 
   app.delete("/api/signals", (_req: Request, res: Response) => {

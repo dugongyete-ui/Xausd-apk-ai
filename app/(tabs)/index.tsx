@@ -416,7 +416,7 @@ function FibLevelsCard() {
 function SignalCard() {
   const { activeSignal, inZone, trend, m15Candles } = useTrading();
 
-  if (!activeSignal) {
+  if (!activeSignal || activeSignal.outcome === "win" || activeSignal.outcome === "loss") {
     const loadMsg =
       trend === "Loading"
         ? `Memuat M15: ${m15Candles.length}/300 candle (EMA50 siap setelah 50)...`

@@ -11,8 +11,11 @@ export function loadSignals(): TradingSignal[] {
     const raw = fs.readFileSync(STORE_PATH, "utf8");
     const parsed = JSON.parse(raw) as TradingSignal[];
     if (!Array.isArray(parsed)) return [];
-    console.log(`[SignalStore] Loaded ${parsed.length} signals from disk`);
-    return parsed;
+    // Filter out pending signals on load — if the server restarts before TP/SL
+    // was hit, those signals are gone. Only keep resolved (win/loss) signals.
+    const resolved = parsed.filter((s) => s.outcome === "win" || s.outcome === "loss");
+    console.log(`[SignalStore] Loaded ${resolved.length} resolved signals from disk (${parsed.length - resolved.length} pending discarded)`);
+    return resolved;
   } catch (e) {
     console.warn("[SignalStore] Load failed:", (e as Error).message);
     return [];

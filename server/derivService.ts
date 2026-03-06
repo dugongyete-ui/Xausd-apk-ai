@@ -779,23 +779,32 @@ class DerivService {
 
     const confirmationType = isEngulfing ? "engulfing" : "rejection";
     const sl = trend === "Bullish" ? fib.swingLow : fib.swingHigh;
-    const slDistance = Math.abs(this.currentPrice - sl);
-    if (slDistance < atr * 0.1) return null;
 
     // Dedup: satu sinyal per candle M5 closed per arah
-    if (lastSigEpoch === closedM5.epoch) return null;
+    if (lastSigEpoch === closedM5.epoch) {
+      // Return the already-saved signal with original fixed prices
+      const sigId = `${closedM5.epoch}_${trend}`;
+      const existing = this.signalHistory.find((s) => s.id === sigId);
+      return existing ?? null;
+    }
+
+    // Gunakan harga penutupan candle M5 (bukan harga live) sebagai entry
+    // supaya level Entry/TP/SL tidak bergerak setiap tick
+    const entryPrice = closedM5.close;
+    const slDistance = Math.abs(entryPrice - sl);
+    if (slDistance < atr * 0.1) return null;
 
     // TP1 scalping: 1:1 RR, cap 15 poin
     const tp1Dist = Math.min(slDistance * 1.0, 15);
     const tp1 = trend === "Bearish"
-      ? this.currentPrice - tp1Dist
-      : this.currentPrice + tp1Dist;
+      ? entryPrice - tp1Dist
+      : entryPrice + tp1Dist;
 
     // TP2 full target: 1.8:1 RR, cap 28 poin
     const tp2Dist = Math.min(Math.max(slDistance * 1.8, 10), 28);
     const tp2 = trend === "Bearish"
-      ? this.currentPrice - tp2Dist
-      : this.currentPrice + tp2Dist;
+      ? entryPrice - tp2Dist
+      : entryPrice + tp2Dist;
 
     const rr1 = Math.round((tp1Dist / slDistance) * 100) / 100;
     const rr2 = Math.round((tp2Dist / slDistance) * 100) / 100;
@@ -813,7 +822,7 @@ class DerivService {
       pair: "XAUUSD",
       timeframe: "M15/M5",
       trend,
-      entryPrice: this.currentPrice,
+      entryPrice,
       stopLoss: sl,
       takeProfit: tp1,
       takeProfit2: tp2,
@@ -854,7 +863,7 @@ class DerivService {
 
       const pushTitle = `${dirEmoji} LIBARTIN — SINYAL ${dirLabel} XAUUSD`;
       const pushBody =
-        `📍 Entry: ${this.currentPrice!.toFixed(2)}\n` +
+        `📍 Entry: ${entryPrice.toFixed(2)}\n` +
         `🛑 SL: ${sl.toFixed(2)}\n` +
         `🎯 TP1: ${tp1.toFixed(2)}  |  TP2: ${tp2.toFixed(2)}\n` +
         `📊 R:R 1:${rr1} / 1:${rr2}  |  ${confirmLabel}`;
@@ -865,7 +874,7 @@ class DerivService {
           type: "signal",
           trend,
           signalId: sigId,
-          entryPrice: this.currentPrice,
+          entryPrice,
           stopLoss: sl,
           takeProfit: tp1,
           takeProfit2: tp2,

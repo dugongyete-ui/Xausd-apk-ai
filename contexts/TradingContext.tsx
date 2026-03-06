@@ -129,7 +129,6 @@ interface TradingContextValue {
   m15Candles: Candle[];
   currentPrice: number | null;
   ema50: number | null;
-  ema200: number | null;
   trend: TrendState;
   fibLevels: FibLevels | null;
   fibTrend: "Bullish" | "Bearish" | null;
@@ -170,7 +169,6 @@ const ATR_PERIOD = 14;
 const M5_ATR_MIN = 0.3;
 const EMA20_PERIOD = 20;
 const EMA50_PERIOD = 50;
-const EMA200_PERIOD = 200;
 const STORAGE_KEY_SIGNALS = "fibo_signals_v2";
 const STORAGE_KEY_BALANCE = "fibo_balance_v1";
 const STORAGE_KEY_M15 = "fibo_m15_candles_v2";
@@ -252,7 +250,7 @@ function calcATR(candles: Candle[], period: number): number {
 //  ③ Arah bersih: tidak ada candle yang break > 25% range dari ujung start
 //  ④ Trending: rata-rata close paruh kedua > paruh pertama (bullish)
 //     atau rata-rata close paruh kedua < paruh pertama (bearish)
-//  ⑤ EMA alignment: EMA50 > EMA200 untuk bullish, EMA50 < EMA200 untuk bearish
+//  ⑤ Trend: Harga > EMA50 untuk bullish, Harga < EMA50 untuk bearish
 //
 // Cara tarik:
 //  Uptrend:   SwingLow (start) → SwingHigh (end)  anchorEpoch = SwingHigh.epoch
@@ -486,7 +484,7 @@ export function TradingProvider({ children }: { children: ReactNode }) {
       if (m15Raw) {
         try {
           const parsed: Candle[] = JSON.parse(m15Raw);
-          if (parsed.length >= EMA200_PERIOD) setM15Candles(parsed);
+          if (parsed.length >= EMA50_PERIOD) setM15Candles(parsed);
         } catch {}
       }
 
@@ -757,7 +755,7 @@ export function TradingProvider({ children }: { children: ReactNode }) {
 
           if (gran === M15_GRAN) {
             setM15Candles((prev) =>
-              updater(prev, M15_COUNT, STORAGE_KEY_M15, EMA200_PERIOD)
+              updater(prev, M15_COUNT, STORAGE_KEY_M15, EMA50_PERIOD)
             );
           } else if (gran === M5_GRAN) {
             setCurrentPrice(nc.close);
@@ -854,21 +852,15 @@ export function TradingProvider({ children }: { children: ReactNode }) {
     return arr.length > 0 ? arr[arr.length - 1] : null;
   }, [m15Candles]);
 
-  const ema200 = useMemo(() => {
-    if (m15Candles.length < EMA200_PERIOD) return null;
-    const arr = calcEMA(m15Candles.map((c) => c.close), EMA200_PERIOD);
-    return arr.length > 0 ? arr[arr.length - 1] : null;
-  }, [m15Candles]);
-
-  // Trend from M15
+  // Trend from M15 — EMA50 only (scalping tidak butuh EMA200)
   const trend = useMemo((): TrendState => {
-    if (m15Candles.length < EMA200_PERIOD) return "Loading";
-    if (ema50 === null || ema200 === null) return "Loading";
+    if (m15Candles.length < EMA50_PERIOD) return "Loading";
+    if (ema50 === null) return "Loading";
     const last = m15Candles[m15Candles.length - 1].close;
-    if (last > ema200 && ema50 > ema200) return "Bullish";
-    if (last < ema200 && ema50 < ema200) return "Bearish";
+    if (last > ema50) return "Bullish";
+    if (last < ema50) return "Bearish";
     return "No Trade";
-  }, [m15Candles, ema50, ema200]);
+  }, [m15Candles, ema50]);
 
   // ATR from M15
   const atr = useMemo(() => {
@@ -887,7 +879,7 @@ export function TradingProvider({ children }: { children: ReactNode }) {
   const lastBearSwingRef = useRef<{ anchorEpoch: number; pairValue: number } | null>(null);
 
   useEffect(() => {
-    if (m15Candles.length < EMA200_PERIOD) {
+    if (m15Candles.length < EMA50_PERIOD) {
       lastBullSwingRef.current = null;
       lastBearSwingRef.current = null;
       setBullFibLevels(null);
@@ -1232,7 +1224,6 @@ export function TradingProvider({ children }: { children: ReactNode }) {
       m15Candles,
       currentPrice,
       ema50,
-      ema200,
       trend,
       fibLevels,
       fibTrend,
@@ -1254,7 +1245,7 @@ export function TradingProvider({ children }: { children: ReactNode }) {
       clearDemoSignal,
     }),
     [
-      m5Candles, m15Candles, currentPrice, ema50, ema200, trend,
+      m5Candles, m15Candles, currentPrice, ema50, trend,
       fibLevels, fibTrend, currentSignal, activeSignal, signalHistory, atr, connectionStatus,
       balance, setBalance, inZone, clearHistory, marketState, marketNextOpen,
       notificationEnabled, requestNotifications, updateSignalOutcome,

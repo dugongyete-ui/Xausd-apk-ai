@@ -158,12 +158,6 @@ export function FibChart() {
     return full.slice(-visibleCandles.length);
   }, [selectedTF, m15Candles, visibleCandles.length]);
 
-  const ema200Series = useMemo(() => {
-    if (selectedTF !== "M15" || m15Candles.length < 200) return [];
-    const full = calcEMAFull(m15Candles.map((c) => c.close), 200);
-    return full.slice(-visibleCandles.length);
-  }, [selectedTF, m15Candles, visibleCandles.length]);
-
   const m5Ema20Series = useMemo(() => {
     if (selectedTF !== "M5" || candles.length < 20) return [];
     const full = calcEMAFull(candles.map((c) => c.close), 20);
@@ -181,12 +175,6 @@ export function FibChart() {
     const v = ema50Series[ema50Series.length - 1];
     return isNaN(v) ? null : v;
   }, [ema50Series]);
-
-  const m15Ema200Val = useMemo(() => {
-    if (ema200Series.length === 0) return null;
-    const v = ema200Series[ema200Series.length - 1];
-    return isNaN(v) ? null : v;
-  }, [ema200Series]);
 
   // ── Range: use only last 30 candles for price range to keep chart tight ──
   const { lo, hi } = useMemo(() => {
@@ -368,9 +356,6 @@ export function FibChart() {
           )}
 
           {/* EMA Lines — M15 view */}
-          {selectedTF === "M15" && ema200Series.length > 0 && (
-            <Path d={emaPath(ema200Series)} stroke="#F97316" strokeWidth={1.5} fill="none" opacity={0.85} />
-          )}
           {selectedTF === "M15" && ema50Series.length > 0 && (
             <Path d={emaPath(ema50Series)} stroke="#A78BFA" strokeWidth={1.5} fill="none" opacity={0.85} />
           )}
@@ -384,9 +369,6 @@ export function FibChart() {
           )}
 
           {/* EMA reference lines on M5 view */}
-          {selectedTF === "M5" && m15Ema200Val !== null && (
-            <FibLine pct="EMA200" desc="M15" price={m15Ema200Val} color="#F97316" lo={lo} hi={hi} plotH={plotH} plotW={plotW} dashed strokeWidth={1.5} />
-          )}
           {selectedTF === "M5" && m15Ema50Val !== null && (
             <FibLine pct="EMA50" desc="M15" price={m15Ema50Val} color="#A78BFA" lo={lo} hi={hi} plotH={plotH} plotW={plotW} dashed strokeWidth={1.5} />
           )}
@@ -617,7 +599,6 @@ export function FibChart() {
         {selectedTF === "M15" ? (
           <>
             <LegItem color="#A78BFA" label="EMA50 M15" line />
-            <LegItem color="#F97316" label="EMA200 M15" line />
           </>
         ) : (
           <>

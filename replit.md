@@ -32,15 +32,15 @@ Backend server berjalan terus di cloud. Ketika HP user offline 1 hari penuh, ser
 4. Mengirim push notification ke HP user (muncul di notifikasi HP)
 Ketika HP dibuka kembali, app mengambil signal history dari backend — sudah ada sinyal yang ter-generate selama offline.
 
-### Trading Strategy: Deep Pullback Continuation
+### Trading Strategy: Deep Pullback Continuation (Pure Fibonacci Scalping)
 
-#### EMA yang Digunakan (3 periode):
+#### EMA yang Digunakan (2 periode):
 - **EMA 20** (M5): Konfirmasi entry — EMA20 > EMA50 = Bullish confirmation, EMA20 < EMA50 = Bearish confirmation
-- **EMA 50** (M15 & M5): Trend M15 (struktur) + konfirmasi alignment M5
-- **EMA 200** (M15): Trend utama — price > EMA200 & EMA50 > EMA200 = Bullish; sebaliknya = Bearish
+- **EMA 50** (M15 & M5): Trend M15 (struktur) — Price > EMA50 = Bullish, Price < EMA50 = Bearish; + konfirmasi alignment M5
+- **EMA 200 DIHAPUS** — tidak digunakan lagi. Strategi scalping fokus pada EMA50 + Fibonacci bi-directional.
 
 #### Alur Deteksi Sinyal:
-1. **Trend M15**: EMA50 vs EMA200 crossover + posisi harga relatif EMA200
+1. **Trend M15**: Posisi harga relatif EMA50 (harga > EMA50 = Bullish, harga < EMA50 = Bearish)
 2. **Swing Detection**: Fractal 5-bar hybrid pada M15 untuk anchor Fibonacci
 3. **Fibonacci Levels**: Swing High & Low → hitung 61.8%, 78.6%, extension -27%
 4. **Golden Zone**: Harga masuk zona 61.8%–78.6% (zona entry utama)

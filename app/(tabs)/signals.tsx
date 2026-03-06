@@ -265,24 +265,24 @@ function SignalItem({ signal }: { signal: TradingSignal }) {
         <View style={styles.priceBlock}>
           <Text style={styles.priceBlockLabel}>ENTRY</Text>
           <Text style={[styles.priceBlockValue, { color: trendColor }]}>
-            {signal.entryPrice.toFixed(2)}
+            {signal.entryPrice?.toFixed(2) ?? "—"}
           </Text>
         </View>
         <View style={styles.priceDivider} />
         <View style={styles.priceBlock}>
           <Text style={styles.priceBlockLabel}>SL</Text>
           <Text style={[styles.priceBlockValue, { color: C.red }]}>
-            {signal.stopLoss.toFixed(2)}
+            {signal.stopLoss?.toFixed(2) ?? "—"}
           </Text>
         </View>
         <View style={styles.priceDivider} />
         <View style={styles.priceBlock}>
           <Text style={styles.priceBlockLabel}>TP1</Text>
           <Text style={[styles.priceBlockValue, { color: C.green }]}>
-            {signal.takeProfit.toFixed(2)}
+            {signal.takeProfit?.toFixed(2) ?? "—"}
           </Text>
         </View>
-        {signal.takeProfit2 && (
+        {signal.takeProfit2 != null && (
           <>
             <View style={styles.priceDivider} />
             <View style={styles.priceBlock}>
@@ -297,7 +297,7 @@ function SignalItem({ signal }: { signal: TradingSignal }) {
         <View style={styles.priceBlock}>
           <Text style={styles.priceBlockLabel}>LOT</Text>
           <Text style={[styles.priceBlockValue, { color: C.blue }]}>
-            {signal.lotSize.toFixed(2)}
+            {signal.lotSize != null ? signal.lotSize.toFixed(2) : "—"}
           </Text>
         </View>
       </View>

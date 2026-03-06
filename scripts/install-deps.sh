@@ -5,10 +5,10 @@
 set -e
 
 echo ""
-echo "╔══════════════════════════════════════╗"
-echo "║   LIBARTIN  Dependency Installer     ║"
-echo "║   Fibonacci XAUUSD Trading Analysis  ║"
-echo "╚══════════════════════════════════════╝"
+echo "╔══════════════════════════════════════════════╗"
+echo "║   LIBARTIN  Dependency Installer             ║"
+echo "║   Bi-Directional Fibonacci XAUUSD Scalping  ║"
+echo "╚══════════════════════════════════════════════╝"
 echo ""
 
 if ! command -v node &> /dev/null; then
@@ -40,37 +40,70 @@ npx patch-package 2>/dev/null || true
 
 echo ""
 echo "Verifying critical packages..."
-PACKAGES=(
+
+# ── Frontend — Expo & React Native ───────────────────────────────────────────
+FRONTEND_PACKAGES=(
   "expo"
   "expo-router"
-  "expo-notifications"
-  "expo-background-fetch"
-  "expo-task-manager"
-  "expo-device"
-  "expo-haptics"
-  "expo-blur"
   "expo-font"
-  "expo-linear-gradient"
   "expo-splash-screen"
   "expo-status-bar"
   "expo-constants"
   "expo-linking"
   "expo-web-browser"
   "expo-system-ui"
-  "@react-native-async-storage/async-storage"
+  "expo-blur"
+  "expo-glass-effect"
+  "expo-image"
+  "expo-symbols"
+  "expo-linear-gradient"
+  "expo-haptics"
+  "expo-device"
+  "expo-background-fetch"
+  "expo-task-manager"
+  "expo-notifications"
+  "react"
+  "react-dom"
+  "react-native"
+  "react-native-web"
   "react-native-svg"
   "react-native-safe-area-context"
   "react-native-screens"
   "react-native-reanimated"
   "react-native-gesture-handler"
-  "@expo-google-fonts/inter"
+  "react-native-keyboard-controller"
+  "react-native-worklets"
+  "@react-native-async-storage/async-storage"
   "@expo/vector-icons"
-  "react"
-  "react-native"
+  "@expo-google-fonts/inter"
+  "@expo-google-fonts/orbitron"
+  "@tanstack/react-query"
 )
 
+# ── Backend — Express Server & WebSocket ─────────────────────────────────────
+BACKEND_PACKAGES=(
+  "express"
+  "http-proxy-middleware"
+  "ws"
+  "tsx"
+  "zod"
+)
+
+echo ""
+echo "  [ FRONTEND ]"
 ALL_OK=true
-for pkg in "${PACKAGES[@]}"; do
+for pkg in "${FRONTEND_PACKAGES[@]}"; do
+  if [ -d "node_modules/$pkg" ]; then
+    echo "  ✓ $pkg"
+  else
+    echo "  ✗ MISSING: $pkg"
+    ALL_OK=false
+  fi
+done
+
+echo ""
+echo "  [ BACKEND ]"
+for pkg in "${BACKEND_PACKAGES[@]}"; do
   if [ -d "node_modules/$pkg" ]; then
     echo "  ✓ $pkg"
   else
@@ -88,12 +121,18 @@ fi
 echo ""
 echo "✓ LIBARTIN dependencies installed successfully!"
 echo ""
-echo "─────────────────────────────────────────"
-echo " Start the app:"
-echo "   Backend:  npm run server:dev"
-echo "   Frontend: npm run expo:dev"
+echo "───────────────────────────────────────────────"
+echo " DEVELOPMENT:"
+echo "   Backend  → npm run server:dev   (port 5000)"
+echo "   Frontend → npm run expo:dev     (port 8081)"
 echo ""
-echo " Build APK:"
+echo " ARCHITECTURE:"
+echo "   Backend  → Express + DerivService WebSocket 24/7"
+echo "   Strategy → Fibonacci Bi-Directional M15/M5 Scalping"
+echo "   AI       → Pollinations AI (text.pollinations.ai)"
+echo "   Time     → WIB (UTC+7) all timestamps"
+echo ""
+echo " BUILD APK:"
 echo "   eas build --platform android --profile production"
-echo "─────────────────────────────────────────"
+echo "───────────────────────────────────────────────"
 echo ""

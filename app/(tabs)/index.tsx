@@ -263,7 +263,7 @@ function PriceCard() {
 }
 
 function EMARow() {
-  const { ema50, ema200, m15Candles, candles } = useTrading();
+  const { ema50, m15Candles, candles } = useTrading();
   const lastClose = m15Candles.length > 0 ? m15Candles[m15Candles.length - 1].close : null;
 
   return (
@@ -274,17 +274,6 @@ function EMARow() {
         {ema50 !== null ? (
           <Text style={[styles.emaValue, { color: lastClose !== null && ema50 < lastClose ? C.green : C.red }]}>
             {ema50.toFixed(1)}
-          </Text>
-        ) : (
-          <Text style={[styles.emaValue, { color: C.textDim }]}>—</Text>
-        )}
-      </View>
-      {/* EMA 200 from M15 */}
-      <View style={styles.emaItem}>
-        <Text style={styles.emaLabel}>EMA200·M15</Text>
-        {ema200 !== null ? (
-          <Text style={[styles.emaValue, { color: lastClose !== null && ema200 < lastClose ? C.green : C.red }]}>
-            {ema200.toFixed(1)}
           </Text>
         ) : (
           <Text style={[styles.emaValue, { color: C.textDim }]}>—</Text>
@@ -430,9 +419,9 @@ function SignalCard() {
   if (!activeSignal) {
     const loadMsg =
       trend === "Loading"
-        ? `Memuat M15: ${m15Candles.length}/300 candle (EMA siap setelah 200)...`
+        ? `Memuat M15: ${m15Candles.length}/300 candle (EMA50 siap setelah 50)...`
         : trend === "No Trade"
-        ? "Trend belum jelas — EMA50 & EMA200 M15 harus sejajar"
+        ? "Trend belum jelas — harga terlalu dekat EMA50 M15"
         : inZone
         ? "Harga di zona M15 61.8–78.6% — tunggu konfirmasi M5 (rejection/engulfing)"
         : "Harga belum masuk zona Fibonacci 61.8–78.6% (M15)";

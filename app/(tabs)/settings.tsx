@@ -191,7 +191,7 @@ export default function SettingsScreen() {
             />
             <StrategyRule
               title="Trend Filter"
-              detail="EMA50 > EMA200 = Bullish · EMA50 < EMA200 = Bearish"
+              detail="Price > EMA50 = Bullish · Price < EMA50 = Bearish (EMA50 M15)"
             />
             <StrategyRule
               title="Swing Detection"

@@ -124,7 +124,6 @@ export interface MarketStateSnapshot {
   trend: TrendState;
   fibTrend: "Bullish" | "Bearish" | null;
   ema50: number | null;
-  ema200: number | null;
   ema20m5: number | null;
   ema50m5: number | null;
   fibLevels: FibLevels | null;
@@ -148,7 +147,6 @@ const M5_GRAN = 300;
 const M5_COUNT = 100;
 const EMA20_PERIOD = 20;
 const EMA50_PERIOD = 50;
-const EMA200_PERIOD = 200;
 const ATR_PERIOD = 14;
 
 // ─── Analysis Helpers (mirrors TradingContext logic) ──────────────────────────
@@ -199,7 +197,7 @@ function calcATR(candles: Candle[], period: number): number {
 //  ③ Arah bersih: tidak ada candle yang break > 25% range dari ujung start
 //  ④ Trending: rata-rata close paruh kedua > paruh pertama (bullish)
 //     atau rata-rata close paruh kedua < paruh pertama (bearish)
-//  ⑤ EMA alignment: EMA50 > EMA200 untuk bullish, EMA50 < EMA200 untuk bearish
+//  ⑤ Trend: Harga > EMA50 untuk bullish, Harga < EMA50 untuk bearish
 //
 // Cara tarik:
 //  Uptrend:   SwingLow (start) → SwingHigh (end)  anchorEpoch = SwingHigh.epoch
@@ -384,16 +382,14 @@ function checkEngulfing(prev: Candle, curr: Candle, trend: "Bullish" | "Bearish"
 }
 
 function getTrend(m15Candles: Candle[]): TrendState {
-  if (m15Candles.length < EMA200_PERIOD) return "Loading";
+  if (m15Candles.length < EMA50_PERIOD) return "Loading";
   const closes = m15Candles.map((c) => c.close);
   const ema50Arr = calcEMA(closes, EMA50_PERIOD);
-  const ema200Arr = calcEMA(closes, EMA200_PERIOD);
-  if (ema50Arr.length === 0 || ema200Arr.length === 0) return "Loading";
+  if (ema50Arr.length === 0) return "Loading";
   const ema50 = ema50Arr[ema50Arr.length - 1];
-  const ema200 = ema200Arr[ema200Arr.length - 1];
   const last = closes[closes.length - 1];
-  if (last > ema200 && ema50 > ema200) return "Bullish";
-  if (last < ema200 && ema50 < ema200) return "Bearish";
+  if (last > ema50) return "Bullish";
+  if (last < ema50) return "Bearish";
   return "No Trade";
 }
 
@@ -670,7 +666,7 @@ class DerivService {
   // Jalankan analisis KEDUA arah setiap tick/candle baru.
   // BUY dan SELL dievaluasi mandiri — keduanya bisa valid sekaligus.
   private runAnalysis() {
-    if (this.m15Candles.length < EMA200_PERIOD) return;
+    if (this.m15Candles.length < EMA50_PERIOD) return;
 
     const swings = findSwings(this.m15Candles);
 
@@ -871,15 +867,10 @@ class DerivService {
   getSnapshot(): MarketStateSnapshot {
     const closes = this.m15Candles.map((c) => c.close);
     let ema50: number | null = null;
-    let ema200: number | null = null;
 
     if (closes.length >= EMA50_PERIOD) {
       const arr = calcEMA(closes, EMA50_PERIOD);
       ema50 = arr.length > 0 ? arr[arr.length - 1] : null;
-    }
-    if (closes.length >= EMA200_PERIOD) {
-      const arr = calcEMA(closes, EMA200_PERIOD);
-      ema200 = arr.length > 0 ? arr[arr.length - 1] : null;
     }
 
     const m5Closes = this.m5Candles.map((c) => c.close);
@@ -895,7 +886,7 @@ class DerivService {
       ema50m5 = arr.length > 0 ? arr[arr.length - 1] : null;
     }
 
-    const trend = this.m15Candles.length >= EMA200_PERIOD ? getTrend(this.m15Candles) : "Loading";
+    const trend = getTrend(this.m15Candles);
 
     // Tentukan fib aktif untuk display: pakai fib arah sinyal aktif,
     // atau fib yang paling baru dari kedua arah jika tidak ada sinyal.
@@ -919,7 +910,6 @@ class DerivService {
       trend,
       fibTrend: this.fibTrend,
       ema50,
-      ema200,
       ema20m5,
       ema50m5,
       fibLevels: activeFib,

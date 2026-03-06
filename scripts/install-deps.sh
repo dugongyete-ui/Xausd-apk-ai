@@ -87,6 +87,21 @@ BACKEND_PACKAGES=(
   "ws"
   "tsx"
   "zod"
+  "esbuild"
+)
+
+# ── Dev Dependencies ─────────────────────────────────────────────────────────
+DEV_PACKAGES=(
+  "@babel/core"
+  "@expo/ngrok"
+  "@types/express"
+  "@types/react"
+  "@types/ws"
+  "esbuild"
+  "eslint"
+  "eslint-config-expo"
+  "patch-package"
+  "typescript"
 )
 
 echo ""
@@ -104,6 +119,17 @@ done
 echo ""
 echo "  [ BACKEND ]"
 for pkg in "${BACKEND_PACKAGES[@]}"; do
+  if [ -d "node_modules/$pkg" ]; then
+    echo "  ✓ $pkg"
+  else
+    echo "  ✗ MISSING: $pkg"
+    ALL_OK=false
+  fi
+done
+
+echo ""
+echo "  [ DEV ]"
+for pkg in "${DEV_PACKAGES[@]}"; do
   if [ -d "node_modules/$pkg" ]; then
     echo "  ✓ $pkg"
   else

@@ -91,6 +91,15 @@ Ketika HP dibuka kembali, app mengambil signal history dari backend — sudah ad
 - `app/(tabs)/settings.tsx` — Settings tab
 
 ## Recent Changes
+
+- **2026-03-06 v3**: Bug fix — sinyal aktif tidak tampil di dashboard + sinkronisasi install script:
+  - **Fix activeSignal tidak tampil**: `activeSignal` kini di-restore dari sinyal pending terbaru di history saat startup (dari cache lokal maupun dari server). Sebelumnya, efek `setActiveSignal(null)` yang dipicu perubahan `currentAnchorEpoch` menghapus sinyal sebelum sempat tampil.
+  - **Fix anchor-change effect**: Efek yang memantau `currentAnchorEpoch` tidak lagi langsung menghapus `activeSignal`. Sinyal pending dipertahankan sampai TP/SL benar-benar tercapai. Hanya sinyal yang sudah resolved (win/loss) yang dihapus.
+  - **Restore dari server signals**: Saat periodic sync (tiap 3 menit) menemukan sinyal baru dari server, `activeSignal` juga di-restore jika belum ada yang aktif.
+  - **Fix esbuild missing**: Tambah `esbuild` ke `devDependencies` di `package.json` (digunakan di `npm run server:build` tapi sebelumnya tidak terdaftar).
+  - **Update install script**: `scripts/install-deps.sh` kini punya section `[ DEV ]` untuk verifikasi dev dependencies, termasuk `esbuild`.
+
+
 - **2026-03-05 v2**: Bi-directional scalping + chart cleanup:
   - **Hapus -27% Extension (Take Profit)** dari `FibChart.tsx` — label sudah digantikan TP1/TP2 di sinyal aktif
   - **Bi-directional swing detection**: `findSwings()` di `derivService.ts` dan `TradingContext.tsx` kini mencari impulse wave terbaru di KEDUA arah (bullish & bearish) tanpa syarat EMA alignment. Sistem memilih impulse paling baru berdasarkan anchorEpoch. Ini memungkinkan sinyal BUY bahkan saat EMA M15 masih bearish, selama impulse naik terbaru sudah terbentuk (new L → new H).

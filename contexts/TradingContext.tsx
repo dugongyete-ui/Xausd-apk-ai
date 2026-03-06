@@ -458,6 +458,24 @@ export function TradingProvider({ children }: { children: ReactNode }) {
     unlockAudioContext();
   }, []);
 
+  // ─── Helper: cari sinyal pending terbaru dari history ──────────────────────
+  // Digunakan untuk restore activeSignal saat startup / sync dari server.
+  // Cek apakah TP/SL sudah tercapai berdasarkan harga terakhir yang diketahui.
+  const findLatestPendingSignal = useCallback(
+    (signals: TradingSignal[], price: number | null): TradingSignal | null => {
+      const pending = signals.find((s) => !s.outcome || s.outcome === "pending");
+      if (!pending) return null;
+      if (price !== null) {
+        const isBull = pending.trend === "Bullish";
+        const tpHit = isBull ? price >= pending.takeProfit : price <= pending.takeProfit;
+        const slHit = isBull ? price <= pending.stopLoss : price >= pending.stopLoss;
+        if (tpHit || slHit) return null;
+      }
+      return pending;
+    },
+    []
+  );
+
   // ─── Startup: load cached data + fetch real signals dari backend ──────────
   useEffect(() => {
     // Langkah 1: Tampilkan data cache (AsyncStorage) secepatnya
@@ -467,15 +485,7 @@ export function TradingProvider({ children }: { children: ReactNode }) {
       AsyncStorage.getItem(STORAGE_KEY_M15),
       AsyncStorage.getItem(STORAGE_KEY_M5),
     ]).then(([sigRaw, balRaw, m15Raw, m5Raw]) => {
-      // Sinyal dari cache — ditampilkan langsung (offline fallback)
-      if (sigRaw) {
-        try {
-          const cached = JSON.parse(sigRaw) as TradingSignal[];
-          setSignalHistory(cached);
-          cached.forEach((s) => savedSignalKeys.current.add(s.id));
-          console.log(`[TradingContext] Loaded ${cached.length} cached signals`);
-        } catch {}
-      }
+      let cachedPrice: number | null = null;
 
       // Balance
       if (balRaw) setBalanceState(parseFloat(balRaw) || 10000);
@@ -494,7 +504,25 @@ export function TradingProvider({ children }: { children: ReactNode }) {
           const parsed: Candle[] = JSON.parse(m5Raw);
           if (parsed.length > 0) {
             setM5Candles(parsed);
-            setCurrentPrice(parsed[parsed.length - 1].close);
+            cachedPrice = parsed[parsed.length - 1].close;
+            setCurrentPrice(cachedPrice);
+          }
+        } catch {}
+      }
+
+      // Sinyal dari cache — ditampilkan langsung (offline fallback)
+      if (sigRaw) {
+        try {
+          const cached = JSON.parse(sigRaw) as TradingSignal[];
+          setSignalHistory(cached);
+          cached.forEach((s) => savedSignalKeys.current.add(s.id));
+          console.log(`[TradingContext] Loaded ${cached.length} cached signals`);
+
+          // Restore activeSignal dari sinyal pending terbaru di cache
+          const pending = findLatestPendingSignal(cached, cachedPrice);
+          if (pending) {
+            setActiveSignal(pending);
+            console.log(`[TradingContext] ActiveSignal restored from cache: ${pending.id}`);
           }
         } catch {}
       }
@@ -525,6 +553,12 @@ export function TradingProvider({ children }: { children: ReactNode }) {
 
             if (newFromServer.length > 0) {
               console.log(`[TradingContext] ${newFromServer.length} sinyal baru dari server (total: ${merged.length})`);
+
+              // Ada sinyal baru dari server — restore activeSignal jika belum ada
+              setActiveSignal((prev) => {
+                if (prev) return prev;
+                return findLatestPendingSignal(merged, cachedPrice);
+              });
             }
             return merged;
           });
@@ -576,6 +610,13 @@ export function TradingProvider({ children }: { children: ReactNode }) {
             merged.forEach((s) => savedSignalKeys.current.add(s.id));
             AsyncStorage.setItem(STORAGE_KEY_SIGNALS, JSON.stringify(merged)).catch(() => {});
             console.log(`[TradingContext] Sync: +${newOnes.length} sinyal baru dari server`);
+
+            // Restore activeSignal dari sinyal pending terbaru jika belum ada
+            setActiveSignal((prev) => {
+              if (prev) return prev;
+              return findLatestPendingSignal(merged, null);
+            });
+
             return merged;
           });
         })
@@ -585,7 +626,7 @@ export function TradingProvider({ children }: { children: ReactNode }) {
     const syncTimer = setInterval(fetchAndMergeSignals, 3 * 60 * 1000);
     return () => clearInterval(syncTimer);
 
-  }, []);
+  }, [findLatestPendingSignal]);
 
   const setBalance = useCallback((b: number) => {
     setBalanceState(b);
@@ -1066,10 +1107,15 @@ export function TradingProvider({ children }: { children: ReactNode }) {
     }
   }, [currentSignal?.id, saveSignal]);
 
-  // Ketika anchor baru terbentuk, clear activeSignal yang lama
-  // (anchor baru = sinyal baru akan menggantikan)
+  // Ketika anchor baru terbentuk, hanya clear activeSignal jika sudah resolved
+  // (outcome win/loss). Jika masih pending, biarkan TP/SL tracker yang handle.
+  // Jangan hapus sinyal pending — bisa menyebabkan dashboard kosong padahal ada sinyal aktif.
   useEffect(() => {
-    setActiveSignal(null);
+    setActiveSignal((prev) => {
+      if (!prev) return null;
+      if (prev.outcome === "win" || prev.outcome === "loss") return null;
+      return prev;
+    });
   }, [currentAnchorEpoch]);
 
   // ─── Notify when a NEW signal appears ─────────────────────────────────────

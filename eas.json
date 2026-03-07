@@ -9,18 +9,27 @@
       "distribution": "internal",
       "android": {
         "buildType": "apk"
+      },
+      "env": {
+        "EXPO_PUBLIC_BACKEND_URL": "https://1ddfd1ea-afbe-47ef-9df5-d4e7b5bb4f80-00-34beavd8a5j5r.spock.replit.dev"
       }
     },
     "preview": {
       "distribution": "internal",
       "android": {
         "buildType": "apk"
+      },
+      "env": {
+        "EXPO_PUBLIC_BACKEND_URL": "https://1ddfd1ea-afbe-47ef-9df5-d4e7b5bb4f80-00-34beavd8a5j5r.spock.replit.dev"
       }
     },
     "production": {
       "android": {
         "buildType": "apk",
         "gradleCommand": ":app:assembleRelease"
+      },
+      "env": {
+        "EXPO_PUBLIC_BACKEND_URL": "https://1ddfd1ea-afbe-47ef-9df5-d4e7b5bb4f80-00-34beavd8a5j5r.spock.replit.dev"
       }
     }
   },

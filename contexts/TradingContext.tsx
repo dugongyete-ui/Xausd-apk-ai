@@ -40,9 +40,13 @@ if (Platform.OS !== "web") {
 }
 
 // Backend URL — server yang jalan 24/7 untuk kirim push ke device
-// On web browser, use current page origin — works in dev preview AND published.
-// On native (Expo Go / APK), fall back to EXPO_PUBLIC_DOMAIN.
+// Priority: EXPO_PUBLIC_BACKEND_URL (production APK) > window.origin (web) > EXPO_PUBLIC_DOMAIN (dev)
 const BACKEND_URL = (() => {
+  const explicit = process.env.EXPO_PUBLIC_BACKEND_URL;
+  if (explicit) {
+    if (explicit.startsWith("http")) return explicit;
+    return `https://${explicit}`;
+  }
   if (typeof window !== "undefined" && window.location?.origin) {
     return window.location.origin;
   }
@@ -104,6 +108,7 @@ export interface TradingSignal {
   pair: string;
   timeframe: string;
   trend: "Bullish" | "Bearish";
+  fibTrend?: "Bullish" | "Bearish";
   entryPrice: number;
   stopLoss: number;
   takeProfit: number;
@@ -455,8 +460,9 @@ export function TradingProvider({ children }: { children: ReactNode }) {
   const lastSignaledCandleEpochRef = useRef<number | null>(null);
   // Track kapan history terakhir di-clear — untuk filter sync dari server
   const clearedAtRef = useRef<number | null>(null);
-  // Lock sinyal per candle epoch — mencegah Entry/TP/SL bergerak setiap tick
-  const lockedSignalRef = useRef<TradingSignal | null>(null);
+  // Lock sinyal per candle epoch+arah — mencegah Entry/TP/SL bergerak setiap tick
+  // Map dari sigKey → signal untuk mendukung deteksi bidirectional
+  const lockedSignalsMapRef = useRef<Map<string, TradingSignal>>(new Map());
   // IDs sinyal yang sudah resolved (win/loss) — jangan emit ulang dari useMemo
   const resolvedSignalKeysRef = useRef<Set<string>>(new Set());
   // ─── Startup: unlock audio context on web ────────────────────────────────
@@ -763,7 +769,7 @@ export function TradingProvider({ children }: { children: ReactNode }) {
     setSignalHistory([]);
     savedSignalKeys.current.clear();
     resolvedSignalKeysRef.current.clear();
-    lockedSignalRef.current = null;
+    lockedSignalsMapRef.current.clear();
     setActiveSignal(null);
     clearedAtRef.current = Date.now();
     AsyncStorage.setItem(STORAGE_KEY_SIGNALS, JSON.stringify([])).catch(() => {});
@@ -1105,117 +1111,114 @@ export function TradingProvider({ children }: { children: ReactNode }) {
     return check(bullFibLevels) || check(bearFibLevels);
   }, [bullFibLevels, bearFibLevels, currentPrice]);
 
-  // ─── Signal detection: M15 zone + M5 confirmation — UNLIMITED ────────────
+  // ─── Signal detection: BIDIRECTIONAL M15 zone + M5 confirmation ─────────
+  // Cek KEDUA arah secara independen: bullFibLevels (BUY) & bearFibLevels (SELL)
   // ① Evaluasi candle M5 CLOSED (m5Candles[n-2])
-  // ② Zone check berdasarkan candle closed (tidak bergerak dengan live price)
-  // ③ Entry/TP/SL dihitung dari closedM5.close — TIDAK bergerak setiap tick
-  // ④ Dedup: 1 sinyal per candle M5 closed (epoch-based), tanpa cooldown waktu
+  // ② Zone check per arah, tidak bergerak dengan live price
+  // ③ Entry/TP/SL dari closedM5.close — terkunci per candle epoch + arah
+  // ④ Return sinyal dari arah yang paling baru (anchorEpoch terbesar)
   const currentSignal = useMemo((): TradingSignal | null => {
     if (
-      !fibLevels || !fibTrend || !atr || atr <= 0 ||
+      !atr || atr <= 0 ||
       m5Candles.length < 3 ||
-      marketState === "closed" || currentAnchorEpoch === null
+      marketState === "closed" ||
+      (!bullFibLevels && !bearFibLevels)
     ) return null;
 
-    // ① Gunakan candle CLOSED: n-2 (candle closed terakhir), n-3 (sebelumnya)
     const closedM5 = m5Candles[m5Candles.length - 2];
     const prevM5   = m5Candles[m5Candles.length - 3];
-    const trendDir = fibTrend;
+    const atrVal   = atr!;
 
-    // Signal ID berdasarkan epoch candle M5 — dedup alami
-    const sigKey = `${closedM5.epoch}_${trendDir}`;
-
-    // Jika sinyal ini sudah resolved (win/loss), jangan emit ulang
-    if (resolvedSignalKeysRef.current.has(sigKey)) return null;
-
-    // Jika sinyal untuk candle ini sudah dikunci (locked), kembalikan versi terkunci
-    // supaya Entry/TP/SL tidak bergerak setiap tick
-    if (lockedSignalRef.current?.id === sigKey) {
-      return lockedSignalRef.current;
-    }
-
-    // Zona diperluas: 50%–88.6%
-    const range = Math.abs(fibLevels.swingHigh - fibLevels.swingLow);
-    let lo: number, hi: number;
-    if (trendDir === "Bearish") {
-      lo = fibLevels.swingLow + range * 0.50;
-      hi = fibLevels.swingLow + range * 0.886;
-    } else {
-      lo = fibLevels.swingHigh - range * 0.886;
-      hi = fibLevels.swingHigh - range * 0.50;
-    }
-
-    // ② Zone check: hanya berdasarkan candle closed (bukan live price)
-    const candleTouchesZone = trendDir === "Bearish"
-      ? closedM5.high >= lo
-      : closedM5.low <= hi;
-    if (!candleTouchesZone) {
-      // Zona tidak tersentuh — bersihkan locked signal jika ada
-      if (lockedSignalRef.current) lockedSignalRef.current = null;
-      return null;
-    }
-
-    // Volatility filter: sangat diperlonggar
     const m5ATR = calcATR(m5Candles.slice(0, -1), ATR_PERIOD);
     if (m5ATR < M5_ATR_MIN) return null;
 
-    // ③ Rejection pin bar atau Engulfing pattern
-    const isRejection = checkRejection(closedM5, trendDir, fibLevels);
-    const isEngulfing = checkEngulfing(prevM5, closedM5, trendDir);
-    if (!isRejection && !isEngulfing) return null;
+    // Bersihkan lock lama (epoch berbeda) agar Map tidak tumbuh selamanya
+    if (lockedSignalsMapRef.current.size > 10) {
+      for (const [key] of lockedSignalsMapRef.current) {
+        const epoch = parseInt(key.split("_")[0], 10);
+        if (epoch !== closedM5.epoch) lockedSignalsMapRef.current.delete(key);
+      }
+    }
 
-    const confirmationType: ConfirmationType = isEngulfing ? "engulfing" : "rejection";
+    function tryDetect(fibLev: FibLevels, dir: "Bullish" | "Bearish"): TradingSignal | null {
+      const sigKey = `${closedM5.epoch}_${dir}`;
 
-    const sl = trendDir === "Bullish" ? fibLevels.swingLow : fibLevels.swingHigh;
+      if (resolvedSignalKeysRef.current.has(sigKey)) return null;
 
-    // Gunakan harga penutupan candle M5 sebagai entry — TIDAK bergerak setiap tick
-    const entryPrice = closedM5.close;
-    const slDistance = Math.abs(entryPrice - sl);
-    if (slDistance < atr * 0.1 || atr < 0.1) return null;
+      const locked = lockedSignalsMapRef.current.get(sigKey);
+      if (locked) return locked;
 
-    // TP1 (scalping cepat): 1:1 RR dari SL, maks 15 pts
-    const tp1Dist = Math.min(slDistance * 1.0, 15);
-    const tp1 = trendDir === "Bearish"
-      ? entryPrice - tp1Dist
-      : entryPrice + tp1Dist;
+      const range = Math.abs(fibLev.swingHigh - fibLev.swingLow);
+      let lo: number, hi: number;
+      if (dir === "Bearish") {
+        lo = fibLev.swingLow + range * 0.50;
+        hi = fibLev.swingLow + range * 0.886;
+      } else {
+        lo = fibLev.swingHigh - range * 0.886;
+        hi = fibLev.swingHigh - range * 0.50;
+      }
 
-    // TP2 (full target): 1.8:1 RR, cap 28 pts
-    const tp2Dist = Math.min(Math.max(slDistance * 1.8, 10), 28);
-    const tp2 = trendDir === "Bearish"
-      ? entryPrice - tp2Dist
-      : entryPrice + tp2Dist;
+      const candleTouchesZone = dir === "Bearish"
+        ? closedM5.high >= lo
+        : closedM5.low <= hi;
+      if (!candleTouchesZone) return null;
 
-    const riskAmount = balance * 0.01;
-    const lotSize = riskAmount / slDistance;
-    const rr1 = tp1Dist / slDistance;
-    const rr2 = tp2Dist / slDistance;
+      const isRejection = checkRejection(closedM5, dir, fibLev);
+      const isEngulfing = checkEngulfing(prevM5, closedM5, dir);
+      if (!isRejection && !isEngulfing) return null;
 
-    const nowMs = Date.now();
+      const confirmationType: ConfirmationType = isEngulfing ? "engulfing" : "rejection";
+      const sl = dir === "Bullish" ? fibLev.swingLow : fibLev.swingHigh;
+      const entryPrice = closedM5.close;
+      const slDistance = Math.abs(entryPrice - sl);
+      if (slDistance < atrVal * 0.1 || atrVal < 0.1) return null;
 
-    const signal: TradingSignal = {
-      id: sigKey,
-      pair: "XAUUSD",
-      timeframe: "M15/M5",
-      trend: trendDir,
-      entryPrice,
-      stopLoss: sl,
-      takeProfit: tp1,
-      takeProfit2: tp2,
-      riskReward: Math.round(rr1 * 100) / 100,
-      riskReward2: Math.round(rr2 * 100) / 100,
-      lotSize: Math.round(lotSize * 100) / 100,
-      timestampUTC: toWIBString(new Date(nowMs)),
-      fibLevels,
-      status: "active",
-      signalCandleEpoch: closedM5.epoch,
-      confirmationType,
-      outcome: "pending",
-    };
+      const tp1Dist = Math.min(slDistance * 1.0, 15);
+      const tp1 = dir === "Bearish" ? entryPrice - tp1Dist : entryPrice + tp1Dist;
 
-    // Kunci sinyal supaya harga tidak bergerak pada tick berikutnya
-    lockedSignalRef.current = signal;
-    return signal;
-  }, [fibLevels, fibTrend, atr, m5Candles, balance, marketState, currentAnchorEpoch]);
+      const tp2Dist = Math.min(Math.max(slDistance * 1.8, 10), 28);
+      const tp2 = dir === "Bearish" ? entryPrice - tp2Dist : entryPrice + tp2Dist;
+
+      const riskAmount = balance * 0.01;
+      const lotSize = riskAmount / slDistance;
+      const rr1 = tp1Dist / slDistance;
+      const rr2 = tp2Dist / slDistance;
+
+      const signal: TradingSignal = {
+        id: sigKey,
+        pair: "XAUUSD",
+        timeframe: "M15/M5",
+        trend: dir,
+        fibTrend: dir,
+        entryPrice,
+        stopLoss: sl,
+        takeProfit: tp1,
+        takeProfit2: tp2,
+        riskReward: Math.round(rr1 * 100) / 100,
+        riskReward2: Math.round(rr2 * 100) / 100,
+        lotSize: Math.round(lotSize * 100) / 100,
+        timestampUTC: toWIBString(new Date(Date.now())),
+        fibLevels: fibLev,
+        status: "active",
+        signalCandleEpoch: closedM5.epoch,
+        confirmationType,
+        outcome: "pending",
+      };
+
+      lockedSignalsMapRef.current.set(sigKey, signal);
+      return signal;
+    }
+
+    const bullSig = bullFibLevels ? tryDetect(bullFibLevels, "Bullish") : null;
+    const bearSig = bearFibLevels ? tryDetect(bearFibLevels, "Bearish") : null;
+
+    if (bullSig && bearSig) {
+      const bullAnchor = lastBullSwingRef.current?.anchorEpoch ?? 0;
+      const bearAnchor = lastBearSwingRef.current?.anchorEpoch ?? 0;
+      return bearAnchor >= bullAnchor ? bearSig : bullSig;
+    }
+    return bullSig ?? bearSig;
+  }, [bullFibLevels, bearFibLevels, atr, m5Candles, balance, marketState]);
 
   useEffect(() => {
     if (currentSignal) {
@@ -1287,7 +1290,7 @@ export function TradingProvider({ children }: { children: ReactNode }) {
         tpSlNotifiedRef.current.tp = true;
         tpSlNotifiedRef.current.sl = true;
         resolvedSignalKeysRef.current.add(activeSignal.id);
-        lockedSignalRef.current = null;
+        lockedSignalsMapRef.current.delete(activeSignal.id);
         updateSignalOutcome(activeSignal.id, "win", activeSignal);
         setActiveSignal(null);
         playSignalSound("tp").catch(() => {});
@@ -1318,7 +1321,7 @@ export function TradingProvider({ children }: { children: ReactNode }) {
         tpSlNotifiedRef.current.sl = true;
         tpSlNotifiedRef.current.tp = true;
         resolvedSignalKeysRef.current.add(activeSignal.id);
-        lockedSignalRef.current = null;
+        lockedSignalsMapRef.current.delete(activeSignal.id);
         updateSignalOutcome(activeSignal.id, "loss", activeSignal);
         setActiveSignal(null);
         playSignalSound("sl").catch(() => {});

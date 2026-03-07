@@ -25,6 +25,8 @@ import C from "@/constants/colors";
 // whether in dev preview or published (avoids wrong domain issues).
 // On native (Expo Go / APK), use EXPO_PUBLIC_DOMAIN.
 function getBackendUrl(): string {
+  const explicit = process.env.EXPO_PUBLIC_BACKEND_URL;
+  if (explicit) return explicit.startsWith("http") ? explicit : `https://${explicit}`;
   if (typeof window !== "undefined" && window.location?.origin) {
     return window.location.origin;
   }

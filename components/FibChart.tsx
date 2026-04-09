@@ -235,12 +235,35 @@ export function FibChart() {
     return d;
   }
 
+  // Use fibTrend (Fibonacci setup direction) for zone coloring — NOT EMA macro trend
+  // This ensures zone shows gold for BUY setup and red for SELL setup regardless of EMA
+  const activeFibTrend = activeSig ? activeSig.trend : fibTrend;
+  const fibIsBull = activeFibTrend === "Bullish";
+  const fibIsBear = activeFibTrend === "Bearish";
+  const hasNoData = candles.length === 0 && m15Candles.length === 0;
+
   // Zone (61.8%–78.6%) highlight — clamped to visible area
   const zoneA = fibLevels ? priceToY(fibLevels.level618, lo, hi, plotH) : null;
   const zoneB = fibLevels ? priceToY(fibLevels.level786, lo, hi, plotH) : null;
   const zoneYTop = zoneA !== null && zoneB !== null ? Math.max(TOP_PAD, Math.min(zoneA, zoneB)) : null;
   const zoneYBot = zoneA !== null && zoneB !== null ? Math.min(TOP_PAD + plotH, Math.max(zoneA, zoneB)) : null;
   const zoneH = zoneYTop !== null && zoneYBot !== null ? Math.max(0, zoneYBot - zoneYTop) : 0;
+
+  // Outer zone (50%–88.6%) highlight
+  const outerZoneCoords = useMemo(() => {
+    if (!fibLevels) return null;
+    const range = Math.abs(fibLevels.swingHigh - fibLevels.swingLow);
+    const isBullFib = (activeFibTrend ?? "Bullish") === "Bullish";
+    const outerLo = isBullFib ? fibLevels.swingHigh - range * 0.886 : fibLevels.swingLow + range * 0.50;
+    const outerHi = isBullFib ? fibLevels.swingHigh - range * 0.50  : fibLevels.swingLow + range * 0.886;
+    return { outerLo, outerHi };
+  }, [fibLevels, activeFibTrend]);
+
+  const outerZoneYA = outerZoneCoords ? priceToY(outerZoneCoords.outerLo, lo, hi, plotH) : null;
+  const outerZoneYB = outerZoneCoords ? priceToY(outerZoneCoords.outerHi, lo, hi, plotH) : null;
+  const outerZoneYTop = outerZoneYA !== null && outerZoneYB !== null ? Math.max(TOP_PAD, Math.min(outerZoneYA, outerZoneYB)) : null;
+  const outerZoneYBot = outerZoneYA !== null && outerZoneYB !== null ? Math.min(TOP_PAD + plotH, Math.max(outerZoneYA, outerZoneYB)) : null;
+  const outerZoneH = outerZoneYTop !== null && outerZoneYBot !== null ? Math.max(0, outerZoneYBot - outerZoneYTop) : 0;
 
   const isBull = trend === "Bullish";
   const isBear = trend === "Bearish";
@@ -250,12 +273,9 @@ export function FibChart() {
     trend === "Loading" ? `LOADING ${m15Candles.length}/300` : "NO TREND";
   const trendColor = isBull ? C.green : isBear ? C.red : C.textDim;
 
-  // Use fibTrend (Fibonacci setup direction) for zone coloring — NOT EMA macro trend
-  // This ensures zone shows gold for BUY setup and red for SELL setup regardless of EMA
-  const activeFibTrend = activeSig ? activeSig.trend : fibTrend;
-  const fibIsBull = activeFibTrend === "Bullish";
-  const fibIsBear = activeFibTrend === "Bearish";
-  const hasNoData = candles.length === 0 && m15Candles.length === 0;
+  // fibTrend label for chart header
+  const fibTrendLabel = activeFibTrend === "Bullish" ? "Fib ▲ BUY" : activeFibTrend === "Bearish" ? "Fib ▼ SELL" : null;
+  const fibTrendColor = activeFibTrend === "Bullish" ? C.green : activeFibTrend === "Bearish" ? C.red : C.textDim;
 
   const SWING_COLOR = "#C084FC";
   const ZONE618_COLOR = "#F0B429";
@@ -273,8 +293,15 @@ export function FibChart() {
             {selectedTF === "M15" ? "Struktur M15 · Deep Pullback Continuation" : "Eksekusi M5 · Precision Entry"}
           </Text>
         </View>
-        <View style={[styles.trendPill, { borderColor: trendColor + "50", backgroundColor: trendColor + "15" }]}>
-          <Text style={[styles.trendPillText, { color: trendColor }]}>{trendLabel}</Text>
+        <View style={{ alignItems: "flex-end", gap: 4 }}>
+          <View style={[styles.trendPill, { borderColor: trendColor + "50", backgroundColor: trendColor + "15" }]}>
+            <Text style={[styles.trendPillText, { color: trendColor }]}>{trendLabel}</Text>
+          </View>
+          {fibTrendLabel && (
+            <View style={[styles.trendPill, { borderColor: fibTrendColor + "50", backgroundColor: fibTrendColor + "15" }]}>
+              <Text style={[styles.trendPillText, { color: fibTrendColor }]}>{fibTrendLabel}</Text>
+            </View>
+          )}
         </View>
       </View>
 
@@ -299,9 +326,9 @@ export function FibChart() {
         <Text style={styles.infoText}>M15: {m15Candles.length} · M5: {candles.length} candle</Text>
         <View style={styles.infoRight}>
           {atr !== null && <Text style={[styles.infoText, styles.atrBadge]}>ATR(14): {atr.toFixed(2)}</Text>}
-          {fibLevels && (
+          {fibLevels && outerZoneCoords && (
             <Text style={styles.infoText}>
-              Zona: {Math.min(fibLevels.level618, fibLevels.level786).toFixed(1)}–{Math.max(fibLevels.level618, fibLevels.level786).toFixed(1)}
+              Entry: {outerZoneCoords.outerLo.toFixed(1)}–{outerZoneCoords.outerHi.toFixed(1)} (50–88.6%)
             </Text>
           )}
         </View>
@@ -331,6 +358,18 @@ export function FibChart() {
               </G>
             );
           })}
+
+          {/* Outer entry zone (50%–88.6%) — shaded behind inner zone */}
+          {fibLevels && outerZoneYTop !== null && outerZoneYBot !== null && outerZoneH > 0 && (
+            <Rect
+              x={0}
+              y={outerZoneYTop}
+              width={plotW}
+              height={outerZoneH}
+              fill={fibIsBull ? C.gold : C.red}
+              opacity={0.04}
+            />
+          )}
 
           {/* Fibonacci zone highlight (61.8%–78.6%) — uses fibTrend direction for color */}
           {fibLevels && zoneYTop !== null && zoneYBot !== null && zoneH > 0 && (

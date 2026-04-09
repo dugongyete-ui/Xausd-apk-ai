@@ -10,7 +10,7 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import C from "@/constants/colors";
-import { useTrading, TrendState } from "@/contexts/TradingContext";
+import { useTrading, TrendState, FibLevels } from "@/contexts/TradingContext";
 import { FibChart } from "@/components/FibChart";
 
 // ─── Live Clock ───────────────────────────────────────────────────────────────
@@ -290,71 +290,109 @@ function EMARow() {
   );
 }
 
-function FibLevelsCard() {
-  const { fibLevels, currentPrice, trend, inZone, atr } = useTrading();
-
-  if (!fibLevels) {
-    return null;
-  }
-
-  const isBull = trend === "Bullish";
-
+function FibSetupCard({
+  fib,
+  dir,
+  currentPrice,
+  atr,
+}: {
+  fib: FibLevels;
+  dir: "Bullish" | "Bearish";
+  currentPrice: number | null;
+  atr: number | null;
+}) {
+  const isBull = dir === "Bullish";
   const SWING_COLOR = "#C084FC";
   const ZONE786_COLOR = "#F97316";
+  const trendColor = isBull ? C.green : C.red;
+
+  const range = Math.abs(fib.swingHigh - fib.swingLow);
+  const entryLo = isBull ? fib.swingHigh - range * 0.886 : fib.swingLow + range * 0.50;
+  const entryHi = isBull ? fib.swingHigh - range * 0.50  : fib.swingLow + range * 0.886;
+  const priceInThisZone =
+    currentPrice !== null && currentPrice >= entryLo && currentPrice <= entryHi;
 
   const levels = isBull
     ? [
-        {
-          label: "0.0% · Swing High (Pivot)",
-          value: fibLevels.swingHigh,
-          color: SWING_COLOR,
-          pct: "0.0%",
-        },
-        {
-          label: "61.8% · Golden Retracement",
-          value: fibLevels.level618,
-          color: C.gold,
-          pct: "61.8%",
-        },
-        {
-          label: "78.6% · Deep Retracement",
-          value: fibLevels.level786,
-          color: ZONE786_COLOR,
-          pct: "78.6%",
-        },
-        {
-          label: "100% · Swing Low (SL Ref)",
-          value: fibLevels.swingLow,
-          color: C.red,
-          pct: "100%",
-        },
+        { label: "0.0% · Swing High (Pivot)",  value: fib.swingHigh,               color: SWING_COLOR,  pct: "0.0%"  },
+        { label: "50.0% · Entry Zone Start",   value: fib.swingHigh - range * 0.50, color: "#94A3B8",   pct: "50.0%" },
+        { label: "61.8% · Golden Retracement", value: fib.level618,                 color: C.gold,       pct: "61.8%" },
+        { label: "78.6% · Deep Retracement",   value: fib.level786,                 color: ZONE786_COLOR, pct: "78.6%" },
+        { label: "88.6% · Entry Zone End",     value: fib.swingHigh - range * 0.886, color: "#94A3B8",  pct: "88.6%" },
+        { label: "100% · Swing Low (SL Ref)",  value: fib.swingLow,                 color: C.red,        pct: "100%"  },
       ]
     : [
-        {
-          label: "0.0% · Swing Low (Pivot)",
-          value: fibLevels.swingLow,
-          color: SWING_COLOR,
-          pct: "0.0%",
-        },
-        {
-          label: "61.8% · Golden Retracement",
-          value: fibLevels.level618,
-          color: C.gold,
-          pct: "61.8%",
-        },
-        {
-          label: "78.6% · Deep Retracement",
-          value: fibLevels.level786,
-          color: ZONE786_COLOR,
-          pct: "78.6%",
-        },
-        {
-          label: "100% · Swing High (SL Ref)",
-          value: fibLevels.swingHigh,
-          color: C.red,
-          pct: "100%",
-        },
+        { label: "0.0% · Swing Low (Pivot)",   value: fib.swingLow,                 color: SWING_COLOR,  pct: "0.0%"  },
+        { label: "50.0% · Entry Zone Start",   value: fib.swingLow + range * 0.50,  color: "#94A3B8",   pct: "50.0%" },
+        { label: "61.8% · Golden Retracement", value: fib.level618,                 color: C.gold,       pct: "61.8%" },
+        { label: "78.6% · Deep Retracement",   value: fib.level786,                 color: ZONE786_COLOR, pct: "78.6%" },
+        { label: "88.6% · Entry Zone End",     value: fib.swingLow + range * 0.886, color: "#94A3B8",   pct: "88.6%" },
+        { label: "100% · Swing High (SL Ref)", value: fib.swingHigh,                color: C.red,        pct: "100%"  },
       ];
+
+  return (
+    <View style={[styles.fibCard, { marginBottom: 10 }]}>
+      <View style={[styles.fibSetupHeader, { borderLeftColor: trendColor }]}>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+          <Ionicons
+            name={isBull ? "trending-up" : "trending-down"}
+            size={13}
+            color={trendColor}
+          />
+          <Text style={[styles.fibSetupTitle, { color: trendColor }]}>
+            {isBull ? "BUY Setup (Bullish)" : "SELL Setup (Bearish)"}
+          </Text>
+        </View>
+        {priceInThisZone && (
+          <View style={styles.zoneBadge}>
+            <PulseDot color={trendColor} />
+            <Text style={[styles.zoneText, { color: trendColor }]}>IN ZONE</Text>
+          </View>
+        )}
+      </View>
+      {levels.map((lvl, i) => {
+        const isCurrent =
+          currentPrice !== null && Math.abs(currentPrice - lvl.value) < 0.5;
+        return (
+          <View
+            key={i}
+            style={[
+              styles.fibRow,
+              i < levels.length - 1 && styles.fibRowBorder,
+              isCurrent && { backgroundColor: lvl.color + "15" },
+            ]}
+          >
+            <View style={[styles.fibDot, { backgroundColor: lvl.color }]} />
+            <View style={styles.fibInfo}>
+              <Text style={styles.fibLevelLabel}>{lvl.label}</Text>
+              <Text style={styles.fibPct}>{lvl.pct}</Text>
+            </View>
+            <Text style={[styles.fibValue, { color: lvl.color }]}>
+              {lvl.value.toFixed(2)}
+            </Text>
+          </View>
+        );
+      })}
+      {atr !== null && (
+        <View style={[styles.fibRow, { borderTopWidth: 1, borderTopColor: C.border }]}>
+          <View style={[styles.fibDot, { backgroundColor: C.textDim }]} />
+          <View style={styles.fibInfo}>
+            <Text style={styles.fibLevelLabel}>ATR (14)</Text>
+            <Text style={styles.fibPct}>Volatility</Text>
+          </View>
+          <Text style={[styles.fibValue, { color: C.textSub }]}>{atr.toFixed(3)}</Text>
+        </View>
+      )}
+    </View>
+  );
+}
+
+function FibLevelsCard() {
+  const { bullFibLevels, bearFibLevels, currentPrice, inZone, atr } = useTrading();
+
+  if (!bullFibLevels && !bearFibLevels) {
+    return null;
+  }
 
   return (
     <View style={styles.section}>
@@ -363,52 +401,26 @@ function FibLevelsCard() {
         {inZone && (
           <View style={styles.zoneBadge}>
             <PulseDot color={C.gold} />
-            <Text style={styles.zoneText}>IN ZONE</Text>
+            <Text style={styles.zoneText}>IN ZONE 50–88.6%</Text>
           </View>
         )}
       </View>
-      <View style={styles.fibCard}>
-        {levels.map((lvl, i) => {
-          const isCurrent =
-            currentPrice !== null && Math.abs(currentPrice - lvl.value) < 0.5;
-          return (
-            <View
-              key={i}
-              style={[
-                styles.fibRow,
-                i < levels.length - 1 && styles.fibRowBorder,
-                isCurrent && { backgroundColor: lvl.color + "15" },
-              ]}
-            >
-              <View style={[styles.fibDot, { backgroundColor: lvl.color }]} />
-              <View style={styles.fibInfo}>
-                <Text style={styles.fibLevelLabel}>{lvl.label}</Text>
-                <Text style={styles.fibPct}>{lvl.pct}</Text>
-              </View>
-              <Text style={[styles.fibValue, { color: lvl.color }]}>
-                {lvl.value.toFixed(2)}
-              </Text>
-            </View>
-          );
-        })}
-        {atr !== null && (
-          <View
-            style={[
-              styles.fibRow,
-              { borderTopWidth: 1, borderTopColor: C.border },
-            ]}
-          >
-            <View style={[styles.fibDot, { backgroundColor: C.textDim }]} />
-            <View style={styles.fibInfo}>
-              <Text style={styles.fibLevelLabel}>ATR (14)</Text>
-              <Text style={styles.fibPct}>Volatility</Text>
-            </View>
-            <Text style={[styles.fibValue, { color: C.textSub }]}>
-              {atr.toFixed(3)}
-            </Text>
-          </View>
-        )}
-      </View>
+      {bullFibLevels && (
+        <FibSetupCard
+          fib={bullFibLevels}
+          dir="Bullish"
+          currentPrice={currentPrice}
+          atr={atr}
+        />
+      )}
+      {bearFibLevels && (
+        <FibSetupCard
+          fib={bearFibLevels}
+          dir="Bearish"
+          currentPrice={currentPrice}
+          atr={atr}
+        />
+      )}
     </View>
   );
 }
@@ -423,8 +435,8 @@ function SignalCard() {
         : trend === "No Trade"
         ? "Trend belum jelas — harga terlalu dekat EMA50 M15"
         : inZone
-        ? "Harga di zona M15 61.8–78.6% — tunggu konfirmasi M5 (rejection/engulfing)"
-        : "Harga belum masuk zona Fibonacci 61.8–78.6% (M15)";
+        ? "Harga di zona entry 50–88.6% — tunggu konfirmasi M5 (rejection/engulfing)"
+        : "Harga belum masuk zona entry Fibonacci 50–88.6% (M15)";
 
     return (
       <View style={styles.section}>
@@ -730,6 +742,22 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: C.border,
     overflow: "hidden",
+  },
+  fibSetupHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: C.border,
+    borderLeftWidth: 3,
+    backgroundColor: C.cardAlt,
+  },
+  fibSetupTitle: {
+    fontFamily: "Inter_700Bold",
+    fontSize: 12,
+    letterSpacing: 0.5,
   },
   fibRow: {
     flexDirection: "row",

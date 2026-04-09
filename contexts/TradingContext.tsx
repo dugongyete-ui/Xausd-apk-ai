@@ -136,6 +136,8 @@ interface TradingContextValue {
   ema50: number | null;
   trend: TrendState;
   fibLevels: FibLevels | null;
+  bullFibLevels: FibLevels | null;
+  bearFibLevels: FibLevels | null;
   fibTrend: "Bullish" | "Bearish" | null;
   currentSignal: TradingSignal | null;
   // activeSignal: sinyal aktif yang sedang di-track TP/SL
@@ -718,7 +720,7 @@ export function TradingProvider({ children }: { children: ReactNode }) {
         })
         .catch(() => {});
     };
-    const signalSyncTimer = setInterval(fetchCurrentSignal, 60 * 1000);
+    const signalSyncTimer = setInterval(fetchCurrentSignal, 20 * 1000);
 
     return () => {
       clearInterval(syncTimer);
@@ -1102,13 +1104,21 @@ export function TradingProvider({ children }: { children: ReactNode }) {
   // Is current M5 price inside either Fibonacci zone?
   const inZone = useMemo(() => {
     if (currentPrice === null) return false;
-    const check = (fib: FibLevels | null) => {
+    const checkBull = (fib: FibLevels | null) => {
       if (!fib) return false;
-      const lo = Math.min(fib.level618, fib.level786);
-      const hi = Math.max(fib.level618, fib.level786);
+      const range = Math.abs(fib.swingHigh - fib.swingLow);
+      const lo = fib.swingHigh - range * 0.886;
+      const hi = fib.swingHigh - range * 0.50;
       return currentPrice >= lo && currentPrice <= hi;
     };
-    return check(bullFibLevels) || check(bearFibLevels);
+    const checkBear = (fib: FibLevels | null) => {
+      if (!fib) return false;
+      const range = Math.abs(fib.swingHigh - fib.swingLow);
+      const lo = fib.swingLow + range * 0.50;
+      const hi = fib.swingLow + range * 0.886;
+      return currentPrice >= lo && currentPrice <= hi;
+    };
+    return checkBull(bullFibLevels) || checkBear(bearFibLevels);
   }, [bullFibLevels, bearFibLevels, currentPrice]);
 
   // ─── Signal detection: BIDIRECTIONAL M15 zone + M5 confirmation ─────────
@@ -1159,8 +1169,8 @@ export function TradingProvider({ children }: { children: ReactNode }) {
       }
 
       const candleTouchesZone = dir === "Bearish"
-        ? closedM5.high >= lo
-        : closedM5.low <= hi;
+        ? closedM5.high >= lo || (currentPrice !== null && currentPrice >= lo && currentPrice <= hi)
+        : closedM5.low <= hi  || (currentPrice !== null && currentPrice >= lo && currentPrice <= hi);
       if (!candleTouchesZone) return null;
 
       const isRejection = checkRejection(closedM5, dir, fibLev);
@@ -1218,7 +1228,7 @@ export function TradingProvider({ children }: { children: ReactNode }) {
       return bearAnchor >= bullAnchor ? bearSig : bullSig;
     }
     return bullSig ?? bearSig;
-  }, [bullFibLevels, bearFibLevels, atr, m5Candles, balance, marketState]);
+  }, [bullFibLevels, bearFibLevels, atr, m5Candles, balance, marketState, currentPrice]);
 
   useEffect(() => {
     if (currentSignal) {
@@ -1402,6 +1412,8 @@ export function TradingProvider({ children }: { children: ReactNode }) {
       ema50,
       trend,
       fibLevels,
+      bullFibLevels,
+      bearFibLevels,
       fibTrend,
       currentSignal,
       activeSignal,
@@ -1422,7 +1434,7 @@ export function TradingProvider({ children }: { children: ReactNode }) {
     }),
     [
       m5Candles, m15Candles, currentPrice, ema50, trend,
-      fibLevels, fibTrend, currentSignal, activeSignal, signalHistory, atr, connectionStatus,
+      fibLevels, bullFibLevels, bearFibLevels, fibTrend, currentSignal, activeSignal, signalHistory, atr, connectionStatus,
       balance, setBalance, inZone, clearHistory, marketState, marketNextOpen,
       notificationEnabled, requestNotifications, updateSignalOutcome,
       injectDemoSignal, clearDemoSignal,

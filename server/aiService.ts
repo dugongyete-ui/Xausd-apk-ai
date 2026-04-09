@@ -436,31 +436,34 @@ class AIService {
 
     console.log(`[AIService] Generating signal recommendation: ${direction} @ ${signal.entryPrice}`);
 
-    const response = await callPollinationsAI([{ role: "user", content: userMsg }]);
-    this.isGenerating = false;
+    try {
+      const response = await callPollinationsAI([{ role: "user", content: userMsg }]);
 
-    if (!response) {
-      console.warn("[AIService] Empty response for signal recommendation");
-      return;
+      if (!response) {
+        console.warn("[AIService] Empty response for signal recommendation");
+        return;
+      }
+
+      const clean = stripMarkdown(response);
+
+      this.addToHistory("user", userMsg);
+      this.addToHistory("assistant", clean);
+
+      this.addDisplayMessage({
+        role: "assistant",
+        content: clean,
+        type: "signal",
+        metadata: {
+          signalId: signal.id,
+          trend: signal.trend,
+          entryPrice: signal.entryPrice,
+        },
+      });
+
+      console.log(`[AIService] Signal recommendation done (${clean.length} chars)`);
+    } finally {
+      this.isGenerating = false;
     }
-
-    const clean = stripMarkdown(response);
-
-    this.addToHistory("user", userMsg);
-    this.addToHistory("assistant", clean);
-
-    this.addDisplayMessage({
-      role: "assistant",
-      content: clean,
-      type: "signal",
-      metadata: {
-        signalId: signal.id,
-        trend: signal.trend,
-        entryPrice: signal.entryPrice,
-      },
-    });
-
-    console.log(`[AIService] Signal recommendation done (${clean.length} chars)`);
   }
 
   // ─── Outcome Commentary (auto-triggered on TP/SL) ──────────────────────────
@@ -487,34 +490,37 @@ class AIService {
 
     console.log(`[AIService] Generating outcome commentary: ${outcomeLabel}`);
 
-    const response = await callPollinationsAI(
-      this.buildMessagesWithHistory(userMsg)
-    );
-    this.isGenerating = false;
+    try {
+      const response = await callPollinationsAI(
+        this.buildMessagesWithHistory(userMsg)
+      );
 
-    if (!response) {
-      console.warn("[AIService] Empty response for outcome commentary");
-      return;
+      if (!response) {
+        console.warn("[AIService] Empty response for outcome commentary");
+        return;
+      }
+
+      const clean = stripMarkdown(response);
+
+      this.addToHistory("user", userMsg);
+      this.addToHistory("assistant", clean);
+
+      this.addDisplayMessage({
+        role: "assistant",
+        content: clean,
+        type: "outcome",
+        metadata: {
+          signalId: signal.id,
+          trend: signal.trend,
+          outcome,
+          entryPrice: signal.entryPrice,
+        },
+      });
+
+      console.log(`[AIService] Outcome commentary done`);
+    } finally {
+      this.isGenerating = false;
     }
-
-    const clean = stripMarkdown(response);
-
-    this.addToHistory("user", userMsg);
-    this.addToHistory("assistant", clean);
-
-    this.addDisplayMessage({
-      role: "assistant",
-      content: clean,
-      type: "outcome",
-      metadata: {
-        signalId: signal.id,
-        trend: signal.trend,
-        outcome,
-        entryPrice: signal.entryPrice,
-      },
-    });
-
-    console.log(`[AIService] Outcome commentary done`);
   }
 
   // ─── User Chat (non-streaming) ─────────────────────────────────────────────

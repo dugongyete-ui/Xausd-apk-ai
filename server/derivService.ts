@@ -945,13 +945,20 @@ class DerivService {
 
     let inZone = false;
     if (this.currentPrice !== null) {
-      const checkZone = (fib: FibLevels | null) => {
+      const checkZone = (fib: FibLevels | null, dir: "Bullish" | "Bearish") => {
         if (!fib) return false;
-        const lo = Math.min(fib.level618, fib.level786);
-        const hi = Math.max(fib.level618, fib.level786);
+        const range = Math.abs(fib.swingHigh - fib.swingLow);
+        let lo: number, hi: number;
+        if (dir === "Bearish") {
+          lo = fib.swingLow + range * 0.50;
+          hi = fib.swingLow + range * 0.886;
+        } else {
+          lo = fib.swingHigh - range * 0.886;
+          hi = fib.swingHigh - range * 0.50;
+        }
         return this.currentPrice! >= lo && this.currentPrice! <= hi;
       };
-      inZone = checkZone(this.bullFibLevels) || checkZone(this.bearFibLevels);
+      inZone = checkZone(this.bullFibLevels, "Bullish") || checkZone(this.bearFibLevels, "Bearish");
     }
 
     const wins = this.signalHistory.filter((s) => s.outcome === "win").length;

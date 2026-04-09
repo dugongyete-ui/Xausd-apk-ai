@@ -139,6 +139,7 @@ export interface MarketStateSnapshot {
   inZone: boolean;
   connectionStatus: "connecting" | "connected" | "disconnected";
   marketOpen: boolean;
+  derivMarketClosed: boolean;
   isActiveSession: boolean;
   lastUpdated: string;
   m15CandleCount: number;
@@ -1444,6 +1445,7 @@ class DerivService {
       inZone,
       connectionStatus: this.connectionStatus,
       marketOpen: forexMarketOpen(),
+      derivMarketClosed: this.derivMarketClosed,
       isActiveSession: isActiveSession(Date.now()),
       lastUpdated: new Date().toUTCString(),
       m15CandleCount: this.m15Candles.length,

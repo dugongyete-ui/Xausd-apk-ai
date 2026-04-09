@@ -558,6 +558,7 @@ export default function AIScreen() {
     let fullReceived = "";
     let thinkingReceived = "";
     let thinkingStreamShowing = false;
+    let responseAdded = false;         // tracks if msgId bubble has been added — avoids stale-closure duplicates
     let sseState: SSEParserState = { lineBuffer: "", currentEvent: "" };
     let xhrDone = false;
 
@@ -634,6 +635,7 @@ export default function AIScreen() {
 
         onThinking: (thinking) => {
           thinkingReceived = thinking;
+          responseAdded = true;         // msgId bubble is being inserted here
           setMessages((prev) =>
             prev.filter((m) => m.id !== thinkingBubbleId && m.id !== thinkingStreamId)
           );
@@ -653,8 +655,9 @@ export default function AIScreen() {
         onChunk: (chunk) => {
           fullReceived += chunk;
 
-          const existingMsg = messages.find((m) => m.id === msgId);
-          if (!existingMsg) {
+          if (!responseAdded) {
+            // First chunk — remove placeholder bubbles and insert AI response bubble
+            responseAdded = true;
             setMessages((prev) =>
               prev.filter((m) => m.id !== thinkingBubbleId && m.id !== thinkingStreamId)
             );
@@ -663,6 +666,7 @@ export default function AIScreen() {
               { id: msgId, role: "assistant", content: fullReceived, streaming: true },
             ]);
           } else {
+            // Subsequent chunks — update content in place, never re-insert
             setMessages((prev) =>
               prev.map((m) =>
                 m.id === msgId ? { ...m, content: fullReceived } : m

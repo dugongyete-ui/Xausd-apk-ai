@@ -405,24 +405,29 @@ function buildMarketContext(snapshot: MarketStateSnapshot): string {
     return "Di luar sesi aktif (Asia/weekend) — sinyal low_confidence";
   })();
 
-  // Bedakan antara "market tutup" (normal) vs "benar-benar disconnected" (masalah teknis)
-  // Deriv otomatis menutup WebSocket saat market tutup — ini NORMAL, bukan error koneksi.
+  // Bedakan antara "market tutup" (normal) vs "benar-benar disconnected" (masalah teknis).
+  // Ada dua cara market dianggap tutup:
+  // 1. forexMarketOpen() = false (UTC time sudah lewat jadwal tutup)
+  // 2. derivMarketClosed = true (Deriv secara eksplisit mengirim "market is presently closed")
+  //    — ini bisa terjadi beberapa menit sebelum UTC clock 22:00 Friday
+  const effectivelyMarketClosed = !snapshot.marketOpen || snapshot.derivMarketClosed;
+
   const connectionLabel = (() => {
-    if (snapshot.marketOpen) {
-      // Market harusnya buka — status koneksi penting
+    if (!effectivelyMarketClosed) {
+      // Market harusnya buka dan Deriv belum bilang closed — status koneksi penting
       if (snapshot.connectionStatus === "connected") return "Terhubung (live data aktif)";
       if (snapshot.connectionStatus === "connecting") return "Sedang menghubungkan...";
       return "TERPUTUS — masalah teknis (market buka tapi koneksi gagal)";
     } else {
-      // Market tutup — disconnect adalah NORMAL, bukan error
-      if (snapshot.connectionStatus === "connected") return "Terhubung (tidak normal saat market tutup)";
+      // Market tutup (baik by UTC schedule maupun sinyal dari Deriv) — disconnect NORMAL
+      if (snapshot.connectionStatus === "connected") return "Terhubung";
       return "Terputus — NORMAL karena market tutup (bukan error koneksi)";
     }
   })();
 
   // Jadwal buka market berikutnya (jika tutup)
   const marketNextOpenLabel = (() => {
-    if (snapshot.marketOpen) return null;
+    if (!effectivelyMarketClosed) return null;
     const now = new Date();
     const day = now.getUTCDay();
     const mins = now.getUTCHours() * 60 + now.getUTCMinutes();
@@ -447,7 +452,7 @@ function buildMarketContext(snapshot: MarketStateSnapshot): string {
     `[DATA PASAR REAL-TIME — LIBARTIN]`,
     `Waktu: ${toWIBString(new Date())}`,
     `Harga XAUUSD: ${p !== null ? p.toFixed(2) : "Belum tersedia (market tutup)"}`,
-    `Status Pasar: ${snapshot.marketOpen ? "BUKA — market aktif" : "TUTUP — di luar jam trading XAUUSD"}`,
+    `Status Pasar: ${effectivelyMarketClosed ? "TUTUP — di luar jam trading XAUUSD" : "BUKA — market aktif"}`,
     ...(marketNextOpenLabel ? [`Jadwal Buka: ${marketNextOpenLabel}`] : []),
     `Sesi Trading: ${sessionLabel}`,
     `Koneksi Deriv: ${connectionLabel}`,

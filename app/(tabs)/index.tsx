@@ -487,11 +487,129 @@ function FibLevelsCard() {
   );
 }
 
+function FloatingProfitCounter({ signal, currentPrice }: { signal: TradingSignal; currentPrice: number | null }) {
+  const isBull = signal.trend === "Bullish";
+  const floatingPts =
+    currentPrice !== null
+      ? isBull
+        ? currentPrice - signal.entryPrice
+        : signal.entryPrice - currentPrice
+      : null;
+
+  const isProfit = floatingPts !== null && floatingPts > 0;
+  const isBreakeven = floatingPts !== null && Math.abs(floatingPts) < 0.5;
+  const profitColor = isBreakeven ? C.gold : isProfit ? C.green : C.red;
+  const profitLabel = isBreakeven ? "ZERO FLOATING" : isProfit ? "PROFIT RUNNING" : "DRAWDOWN";
+
+  return (
+    <View style={floatStyles.wrapper}>
+      <View style={[floatStyles.labelRow, { backgroundColor: profitColor + "18" }]}>
+        <View style={[floatStyles.dot, { backgroundColor: profitColor }]} />
+        <Text style={[floatStyles.label, { color: profitColor }]}>{profitLabel}</Text>
+      </View>
+      <View style={floatStyles.ptsRow}>
+        <Text style={[floatStyles.pts, { color: profitColor }]}>
+          {floatingPts !== null
+            ? `${floatingPts >= 0 ? "+" : ""}${floatingPts.toFixed(2)} pts`
+            : "—"}
+        </Text>
+        {currentPrice !== null && (
+          <Text style={floatStyles.nowPrice}>@ {currentPrice.toFixed(2)}</Text>
+        )}
+      </View>
+    </View>
+  );
+}
+
+const floatStyles = StyleSheet.create({
+  wrapper: {
+    gap: 4,
+  },
+  labelRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 8,
+    alignSelf: "flex-start",
+  },
+  dot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+  },
+  label: {
+    fontFamily: "Inter_700Bold",
+    fontSize: 9,
+    letterSpacing: 1.2,
+  },
+  ptsRow: {
+    flexDirection: "row",
+    alignItems: "baseline",
+    gap: 6,
+  },
+  pts: {
+    fontFamily: "Orbitron_700Bold",
+    fontSize: 22,
+    letterSpacing: -0.5,
+  },
+  nowPrice: {
+    fontFamily: "Inter_400Regular",
+    fontSize: 11,
+    color: "#6b7280",
+  },
+});
+
+function BreakevenBadge() {
+  const pulse = useRef(new Animated.Value(1)).current;
+  useEffect(() => {
+    Animated.loop(
+      Animated.sequence([
+        Animated.timing(pulse, { toValue: 0.4, duration: 600, useNativeDriver: Platform.OS !== "web" }),
+        Animated.timing(pulse, { toValue: 1, duration: 600, useNativeDriver: Platform.OS !== "web" }),
+      ])
+    ).start();
+  }, [pulse]);
+  return (
+    <View style={beStyles.badge}>
+      <Animated.View style={[beStyles.dot, { opacity: pulse }]} />
+      <Text style={beStyles.text}>BREAKEVEN LOCKED · TP1 HIT</Text>
+    </View>
+  );
+}
+
+const beStyles = StyleSheet.create({
+  badge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    backgroundColor: "rgba(16,185,129,0.15)",
+    borderWidth: 1,
+    borderColor: "rgba(16,185,129,0.35)",
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 10,
+    alignSelf: "flex-start",
+  },
+  dot: {
+    width: 7,
+    height: 7,
+    borderRadius: 4,
+    backgroundColor: "#10b981",
+  },
+  text: {
+    fontFamily: "Inter_700Bold",
+    fontSize: 9,
+    color: "#10b981",
+    letterSpacing: 1.1,
+  },
+});
+
 function SignalCard() {
-  const { activeSignal, inZone, trend, m15Candles } = useTrading();
+  const { activeSignal, inZone, trend, m15Candles, currentPrice } = useTrading();
 
   if (!activeSignal || activeSignal.outcome === "win" || activeSignal.outcome === "loss" || activeSignal.outcome === "expired") {
-    // Masalah 4f: Skeleton loading saat data belum siap
     if (trend === "Loading" && m15Candles.length < 50) {
       return (
         <View style={styles.section}>
@@ -531,6 +649,11 @@ function SignalCard() {
   const isBull = activeSignal.trend === "Bullish";
   const trendColor = isBull ? C.green : C.red;
 
+  const isBreakevenMode = activeSignal.effectiveSL !== undefined;
+  const displaySL = isBreakevenMode ? activeSignal.effectiveSL! : activeSignal.stopLoss;
+  const slLabel = isBreakevenMode ? "BE" : "SL";
+  const slColor = isBreakevenMode ? "#10b981" : C.red;
+
   return (
     <View style={styles.section}>
       <View style={styles.sectionHeader}>
@@ -554,7 +677,20 @@ function SignalCard() {
           </Text>
         </View>
       </View>
-      <View style={[styles.signalCard, { borderColor: trendColor + "40" }]}>
+      <View style={[styles.signalCard, { borderColor: isBreakevenMode ? "#10b98150" : trendColor + "40" }]}>
+
+        {/* Breakeven locked banner */}
+        {isBreakevenMode && (
+          <View style={{ marginBottom: 10 }}>
+            <BreakevenBadge />
+          </View>
+        )}
+
+        {/* Live floating profit/loss counter */}
+        <View style={{ marginBottom: 12 }}>
+          <FloatingProfitCounter signal={activeSignal} currentPrice={currentPrice} />
+        </View>
+
         {/* Confirmation type badge */}
         <View style={styles.confirmRow}>
           <View style={[styles.confirmBadge, { backgroundColor: trendColor + "18" }]}>
@@ -585,16 +721,16 @@ function SignalCard() {
         <View style={styles.signalDivider} />
         <View style={styles.signalLevelsRow}>
           <View style={styles.signalLevel}>
-            <View style={[styles.levelDot, { backgroundColor: C.red }]} />
-            <Text style={styles.levelKey}>SL</Text>
-            <Text style={[styles.levelVal, { color: C.red }]}>
-              {activeSignal.stopLoss.toFixed(2)}
+            <View style={[styles.levelDot, { backgroundColor: slColor }]} />
+            <Text style={[styles.levelKey, { color: isBreakevenMode ? "#10b981" : undefined }]}>{slLabel}</Text>
+            <Text style={[styles.levelVal, { color: slColor }]}>
+              {displaySL.toFixed(2)}
             </Text>
           </View>
           <View style={styles.signalLevel}>
             <View style={[styles.levelDot, { backgroundColor: C.green }]} />
             <Text style={styles.levelKey}>TP1</Text>
-            <Text style={[styles.levelVal, { color: C.green }]}>
+            <Text style={[styles.levelVal, { color: isBreakevenMode ? "#6b7280" : C.green, textDecorationLine: isBreakevenMode ? "line-through" : "none" }]}>
               {activeSignal.takeProfit.toFixed(2)}
             </Text>
           </View>

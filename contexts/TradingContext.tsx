@@ -789,6 +789,23 @@ export function TradingProvider({ children }: { children: ReactNode }) {
             if (snap.connectionStatus) setConnectionStatus(snap.connectionStatus);
           } catch {}
         });
+        // Menerima update real-time saat effectiveSL berubah (TP1 hit → zero floating)
+        sseSource.addEventListener("signal_update", (e) => {
+          resetHeartbeat();
+          try {
+            const updatedSignal = JSON.parse((e as MessageEvent).data) as TradingSignal;
+            setActiveSignal((prev) => {
+              if (!prev || prev.id !== updatedSignal.id) return prev;
+              if (prev.outcome === "win" || prev.outcome === "loss") return prev;
+              // Update effectiveSL agar zero floating state langsung tampil
+              if (updatedSignal.effectiveSL !== prev.effectiveSL) {
+                console.log(`[SSE] Zero floating aktif: effectiveSL=${updatedSignal.effectiveSL} untuk sinyal ${updatedSignal.id}`);
+                return { ...prev, effectiveSL: updatedSignal.effectiveSL };
+              }
+              return prev;
+            });
+          } catch {}
+        });
         sseSource.onerror = () => {
           sseRetryCount++;
           const delay = Math.min(1000 * 2 ** sseRetryCount, 30000);
@@ -821,11 +838,19 @@ export function TradingProvider({ children }: { children: ReactNode }) {
               });
             } else if (data.signal.outcome === "pending") {
               setActiveSignal((prev) => {
-                if (prev && prev.outcome === "pending") return prev;
                 if (resolvedSignalKeysRef.current.has(data.signal!.id)) return prev;
+                // Jika sinyal sama (ID sama), update effectiveSL dari server agar
+                // zero floating / breakeven state langsung terlihat di UI
+                if (prev && prev.id === data.signal!.id && prev.outcome === "pending") {
+                  const serverEffSL = data.signal!.effectiveSL;
+                  // Hanya update jika effectiveSL berubah (server menggeser SL ke breakeven)
+                  if (serverEffSL !== prev.effectiveSL) {
+                    console.log(`[TradingContext] TP1 HIT — effectiveSL updated to ${serverEffSL} (zero floating active)`);
+                    return { ...prev, effectiveSL: serverEffSL };
+                  }
+                  return prev;
+                }
                 // Jangan restore sinyal yang berlawanan dengan trend M15 aktif saat ini
-                // Trend bisa dibaca dari state saat ini via closure — tapi trend state
-                // bisa stale di closure, jadi cukup mengandalkan server filter yang sudah aman.
                 console.log(`[TradingContext] Periodic sync: restored pending signal ${data.signal!.id}`);
                 savedSignalKeys.current.add(data.signal!.id);
                 return data.signal!;
@@ -840,7 +865,7 @@ export function TradingProvider({ children }: { children: ReactNode }) {
         })
         .catch(() => {});
     };
-    const signalSyncTimer = setInterval(fetchCurrentSignal, 15 * 1000);
+    const signalSyncTimer = setInterval(fetchCurrentSignal, 5 * 1000);
 
     return () => {
       clearInterval(syncTimer);

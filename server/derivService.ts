@@ -807,6 +807,8 @@ class DerivService {
         sig.effectiveSL = sig.entryPrice;
         changed = true;
         console.log(`[DerivService] Signal ${sig.id} hit TP1 → SL trailed to breakeven @ ${sig.entryPrice}`);
+        // Push zero-floating update ke semua SSE clients secara real-time
+        this.emitSSE("signal_update", { ...sig });
       } else if (slHit) {
         const isBreakevenStop = sig.effectiveSL !== undefined;
         sig.outcome = isBreakevenStop ? "win" : "loss";

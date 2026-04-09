@@ -748,6 +748,15 @@ class DerivService {
     const price = this.currentPrice;
     let changed = false;
 
+    // Get latest M5 candle high/low for intra-candle SL/TP detection
+    // Using candle.low for BUY SL check and candle.high for SELL SL check
+    // prevents missed resolutions when price spikes through SL but closes above it
+    const latestM5 = this.m5Candles.length > 0
+      ? this.m5Candles[this.m5Candles.length - 1]
+      : null;
+    const candleLow  = latestM5 ? latestM5.low  : price;
+    const candleHigh = latestM5 ? latestM5.high : price;
+
     // ── Reconcile active-direction state ─────────────────────────────────────
     // On each tick, ensure active*SignalId refers to the most recent unresolved
     // pending signal per direction. This handles legacy data with multiple
@@ -792,35 +801,28 @@ class DerivService {
         continue;
       }
 
-      const tp1Hit = isBull ? price >= sig.takeProfit : price <= sig.takeProfit;
+      // Use candle high/low for accurate intra-candle SL/TP detection.
+      // BUY: SL is hit if candle LOW touches or breaks below SL level.
+      //      TP is hit if candle HIGH touches or exceeds TP level.
+      // SELL: SL is hit if candle HIGH touches or breaks above SL level.
+      //       TP is hit if candle LOW touches or drops below TP level.
+      const slHit  = isBull ? candleLow  <= effectiveSL    : candleHigh >= effectiveSL;
+      const tp1Hit = isBull ? candleHigh >= sig.takeProfit  : candleLow  <= sig.takeProfit;
       const tp2Hit = sig.takeProfit2 !== undefined
-        ? (isBull ? price >= sig.takeProfit2 : price <= sig.takeProfit2)
+        ? (isBull ? candleHigh >= sig.takeProfit2 : candleLow <= sig.takeProfit2)
         : false;
-      const slHit = isBull ? price <= effectiveSL : price >= effectiveSL;
 
-      if (tp2Hit) {
-        sig.outcome = "win";
-        changed = true;
-        this.consecutiveLosses = 0;
-        this.cooldownUntil = null;
-        console.log(`[DerivService] Signal ${sig.id} hit TP2 → WIN @ ${price}`);
-        this.triggerOutcomeCommentary(sig.id, "win");
-        if (isBull) { this.activeBuySignalId = null; this.bullAnchorSignaled = null; }
-        else         { this.activeSellSignalId = null; this.bearAnchorSignaled = null; }
-      } else if (tp1Hit && sig.effectiveSL === undefined) {
-        sig.effectiveSL = sig.entryPrice;
-        changed = true;
-        console.log(`[DerivService] Signal ${sig.id} hit TP1 → SL trailed to breakeven @ ${sig.entryPrice}`);
-        // Push zero-floating update ke semua SSE clients secara real-time
-        this.emitSSE("signal_update", { ...sig });
-      } else if (slHit) {
+      // SL has priority: if SL and TP hit on the same candle (spike/gap),
+      // treat as LOSS (conservative, realistic assumption).
+      if (slHit) {
         const isBreakevenStop = sig.effectiveSL !== undefined;
         sig.outcome = isBreakevenStop ? "win" : "loss";
         changed = true;
+        const hitPrice = isBull ? candleLow : candleHigh;
         if (isBreakevenStop) {
           this.consecutiveLosses = 0;
           this.cooldownUntil = null;
-          console.log(`[DerivService] Signal ${sig.id} hit breakeven SL → WIN (TP1 locked) @ ${price}`);
+          console.log(`[DerivService] Signal ${sig.id} hit breakeven SL → WIN (TP1 locked) @ low/high ${hitPrice}`);
           this.triggerOutcomeCommentary(sig.id, "win");
         } else {
           // Masalah 1e: hitung consecutive loss
@@ -829,11 +831,28 @@ class DerivService {
             this.cooldownUntil = Date.now() + COOLDOWN_MS;
             console.log(`[DerivService] MAX_DAILY_LOSS reached (${MAX_DAILY_LOSS}) — 4h cooldown aktif`);
           }
-          console.log(`[DerivService] Signal ${sig.id} hit SL → LOSS @ ${price} (consecutive: ${this.consecutiveLosses})`);
+          console.log(`[DerivService] Signal ${sig.id} hit SL → LOSS @ low/high ${hitPrice} (consecutive: ${this.consecutiveLosses})`);
           this.triggerOutcomeCommentary(sig.id, "loss");
         }
         if (isBull) { this.activeBuySignalId = null; this.bullAnchorSignaled = null; }
         else         { this.activeSellSignalId = null; this.bearAnchorSignaled = null; }
+      } else if (tp2Hit) {
+        sig.outcome = "win";
+        changed = true;
+        this.consecutiveLosses = 0;
+        this.cooldownUntil = null;
+        const hitPrice = isBull ? candleHigh : candleLow;
+        console.log(`[DerivService] Signal ${sig.id} hit TP2 → WIN @ high/low ${hitPrice}`);
+        this.triggerOutcomeCommentary(sig.id, "win");
+        if (isBull) { this.activeBuySignalId = null; this.bullAnchorSignaled = null; }
+        else         { this.activeSellSignalId = null; this.bearAnchorSignaled = null; }
+      } else if (tp1Hit && sig.effectiveSL === undefined) {
+        sig.effectiveSL = sig.entryPrice;
+        changed = true;
+        const hitPrice = isBull ? candleHigh : candleLow;
+        console.log(`[DerivService] Signal ${sig.id} hit TP1 @ high/low ${hitPrice} → SL trailed to breakeven @ ${sig.entryPrice}`);
+        // Push zero-floating update ke semua SSE clients secara real-time
+        this.emitSSE("signal_update", { ...sig });
       }
     }
     if (changed) saveSignals(this.signalHistory);

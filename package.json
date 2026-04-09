@@ -20,6 +20,8 @@
     "@expo/vector-icons": "^15.0.3",
     "@react-native-async-storage/async-storage": "2.2.0",
     "@tanstack/react-query": "^5.83.0",
+    "@types/better-sqlite3": "^7.6.13",
+    "better-sqlite3": "^12.8.0",
     "cohere-ai": "^8.0.0",
     "expo": "~54.0.27",
     "expo-background-fetch": "~14.0.9",

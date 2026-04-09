@@ -20,9 +20,11 @@ Iterative development dengan komunikasi jelas pada perubahan signifikan. Sebelum
 ### Backend (Express — berjalan 24/7)
 - **Server**: Port 5000, melayani landing page dan static Expo assets.
 - **DerivService** (`server/derivService.ts`): Koneksi WebSocket persisten ke Deriv yang berjalan 24/7. Menangani streaming data, analisis, dan deteksi sinyal secara terus-menerus — bahkan saat HP mati/tidak ada internet di sisi user.
-- **APIs**: `GET /api/market-state`, `GET /api/signals`, `GET /api/current-signal`, `DELETE /api/signals`, `GET /api/health`, `POST /api/test-signal`.
+- **SignalStore** (`server/signalStore.ts`): Persistensi sinyal menggunakan SQLite (`better-sqlite3`, WAL mode, `data/signals.db`). Auto-migration dari `signals.json` lama. Upsert transaction, max 500 sinyal, validasi schema penuh.
+- **APIs**: `GET /api/market-state`, `GET /api/signals`, `GET /api/current-signal`, `GET /api/signals/stream` (SSE), `DELETE /api/signals`, `GET /api/health`, `POST /api/test-signal`.
+- **SSE Signal Stream** (`GET /api/signals/stream`): Server-Sent Events untuk push sinyal real-time ke frontend tanpa polling. Heartbeat 20 detik, snapshot awal saat connect.
 - **Push Notifications**: Backend mengirim Expo Push Notifications ke HP saat sinyal baru, TP hit, atau SL hit — tanpa perlu app aktif.
-- **AI Integration** (`server/aiService.ts`): AI chat service dengan contextual memory. Auto-generate rekomendasi saat sinyal BUY/SELL terdeteksi dan komentar saat TP/SL tercapai. Arsitektur fire-and-poll: `POST /api/ai/chat` langsung return (queue background), frontend poll `GET /api/ai/messages` tiap 2 detik sampai respons muncul.
+- **AI Integration** (`server/aiService.ts`): AI chat service dengan contextual memory. Rate limiting 5 msg/menit per IP. Timeout 20 detik. Context AI kini menyertakan 5 sinyal terakhir dengan outcome. Arsitektur fire-and-poll: `POST /api/ai/chat` langsung return (queue background), frontend poll `GET /api/ai/messages` tiap 2 detik sampai respons muncul.
 
 ### Konsep Utama: Sinyal Tanpa HP Aktif
 Backend server berjalan terus di cloud. Ketika HP user offline 1 hari penuh, server tetap:

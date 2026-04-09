@@ -1,7 +1,7 @@
 import type { Express, Request, Response } from "express";
 import { createServer, type Server } from "node:http";
 import { derivService } from "./derivService";
-import { aiService } from "./aiService";
+import { aiService, checkRateLimit } from "./aiService";
 
 export async function registerRoutes(app: Express): Promise<Server> {
   app.get("/api/market-state", (_req: Request, res: Response) => {
@@ -49,10 +49,26 @@ export async function registerRoutes(app: Express): Promise<Server> {
     res.json({ success: true, totalTokens: derivService.getTokenCount() });
   });
 
+  // Masalah 5c: Health check endpoint yang lebih lengkap
   app.get("/api/health", (_req: Request, res: Response) => {
+    const snapshot = derivService.getSnapshot();
+    const lastSignal = derivService.getSignalHistory()[0];
+    const lastTickAge = snapshot.lastUpdated
+      ? Math.round((Date.now() - new Date(snapshot.lastUpdated).getTime()) / 1000)
+      : null;
+    const lastSignalAge = lastSignal
+      ? Math.round((Date.now() - new Date(lastSignal.timestampUTC).getTime()) / 1000)
+      : null;
     res.json({
       status: "ok",
       timestamp: new Date().toUTCString(),
+      wsConnected: snapshot.connectionStatus === "connected",
+      connectionStatus: snapshot.connectionStatus,
+      lastTickAge,
+      lastSignalAge,
+      m5Count: snapshot.m5CandleCount,
+      m15Count: snapshot.m15CandleCount,
+      marketOpen: snapshot.marketOpen,
       registeredDevices: derivService.getTokenCount(),
     });
   });
@@ -77,6 +93,40 @@ export async function registerRoutes(app: Express): Promise<Server> {
     res.json({ ok: true, price, trend, sl, tp1, tp2, rr1, rr2, tokens: derivService.getTokenCount() });
   });
 
+  // ─── SSE Signal Stream (Masalah 4b) ───────────────────────────────────────
+  // Frontend subscribe ke endpoint ini untuk menerima sinyal secara real-time
+  // tanpa polling 15 detik. Format: event: signal / data: {...TradingSignal}
+  app.get("/api/signals/stream", (req: Request, res: Response) => {
+    res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+    res.setHeader("Cache-Control", "no-cache, no-transform");
+    res.setHeader("Connection", "keep-alive");
+    res.setHeader("X-Accel-Buffering", "no");
+    res.flushHeaders();
+
+    derivService.addSSEClient(res);
+
+    const flush = () => {
+      if (typeof (res as unknown as { flush?: () => void }).flush === "function") {
+        (res as unknown as { flush: () => void }).flush();
+      }
+    };
+
+    const heartbeat = setInterval(() => {
+      res.write(": keep-alive\n\n");
+      flush();
+    }, 20000);
+
+    // Kirim snapshot awal saat connect
+    const snapshot = derivService.getSnapshot();
+    res.write(`event: snapshot\ndata: ${JSON.stringify(snapshot)}\n\n`);
+    flush();
+
+    req.on("close", () => {
+      clearInterval(heartbeat);
+      derivService.removeSSEClient(res);
+    });
+  });
+
   // ─── AI Endpoints ──────────────────────────────────────────────────────────
 
   // GET /api/ai/messages — Get latest AI messages (for frontend polling)
@@ -96,6 +146,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.status(400).json({ error: "Pesan terlalu panjang (maks 500 karakter)" });
       return;
     }
+
+    // Masalah 3b: Rate limiting — maks 5 pesan per menit per IP
+    const clientKey = req.ip ?? "unknown";
+    if (!checkRateLimit(clientKey)) {
+      res.status(429).json({ error: "Terlalu banyak pesan. Tunggu 1 menit sebelum mencoba lagi." });
+      return;
+    }
+
     const trimmed = message.trim();
     const snapshot = derivService.getSnapshot();
     const requestId = `req_${Date.now()}`;
@@ -118,6 +176,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
     if (message.trim().length > 500) {
       res.status(400).json({ error: "Pesan terlalu panjang (maks 500 karakter)" });
+      return;
+    }
+
+    // Masalah 3b: Rate limiting untuk stream endpoint
+    const clientKey = req.ip ?? "unknown";
+    if (!checkRateLimit(clientKey)) {
+      res.status(429).json({ error: "Terlalu banyak pesan. Tunggu 1 menit sebelum mencoba lagi." });
       return;
     }
 

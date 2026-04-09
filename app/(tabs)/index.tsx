@@ -13,6 +13,30 @@ import C from "@/constants/colors";
 import { useTrading, TrendState, FibLevels, TradingSignal } from "@/contexts/TradingContext";
 import { FibChart } from "@/components/FibChart";
 
+// Masalah 4f: Skeleton loading placeholder dengan animasi fade
+function SkeletonBox({ width, height, style }: { width?: number | string; height?: number; style?: object }) {
+  const opacity = useRef(new Animated.Value(0.3)).current;
+  useEffect(() => {
+    const anim = Animated.loop(
+      Animated.sequence([
+        Animated.timing(opacity, { toValue: 0.7, duration: 700, useNativeDriver: true }),
+        Animated.timing(opacity, { toValue: 0.3, duration: 700, useNativeDriver: true }),
+      ])
+    );
+    anim.start();
+    return () => anim.stop();
+  }, [opacity]);
+  return (
+    <Animated.View
+      style={[
+        { width: width ?? "100%", height: height ?? 16, borderRadius: 8, backgroundColor: C.border },
+        { opacity },
+        style,
+      ]}
+    />
+  );
+}
+
 function RegimeBadge({ regime }: { regime?: TradingSignal["marketRegime"] }) {
   if (!regime) return null;
   const config =
@@ -466,7 +490,21 @@ function FibLevelsCard() {
 function SignalCard() {
   const { activeSignal, inZone, trend, m15Candles } = useTrading();
 
-  if (!activeSignal || activeSignal.outcome === "win" || activeSignal.outcome === "loss") {
+  if (!activeSignal || activeSignal.outcome === "win" || activeSignal.outcome === "loss" || activeSignal.outcome === "expired") {
+    // Masalah 4f: Skeleton loading saat data belum siap
+    if (trend === "Loading" && m15Candles.length < 50) {
+      return (
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>SIGNAL  ·  M15/M5</Text>
+          <View style={styles.noSignalCard}>
+            <SkeletonBox height={14} width="60%" style={{ marginBottom: 10, alignSelf: "center" }} />
+            <SkeletonBox height={11} width="80%" style={{ marginBottom: 6, alignSelf: "center" }} />
+            <SkeletonBox height={11} width="50%" style={{ alignSelf: "center" }} />
+          </View>
+        </View>
+      );
+    }
+
     const loadMsg =
       trend === "Loading"
         ? `Memuat M15: ${m15Candles.length}/300 candle (EMA50 siap setelah 50)...`

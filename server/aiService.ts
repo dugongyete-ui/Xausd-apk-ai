@@ -6,6 +6,30 @@ const cohereClient = new CohereClientV2({
   token: process.env.COHERE_API_KEY ?? "",
 });
 
+// ─── Rate Limiter (Masalah 3b) ─────────────────────────────────────────────────
+// Maks 5 pesan per menit per session (in-memory, keyed by IP/sessionId)
+const rateLimitMap = new Map<string, { count: number; resetAt: number }>();
+
+export function checkRateLimit(key: string, maxPerMin = 5): boolean {
+  const now = Date.now();
+  const entry = rateLimitMap.get(key);
+  if (!entry || now > entry.resetAt) {
+    rateLimitMap.set(key, { count: 1, resetAt: now + 60_000 });
+    return true;
+  }
+  if (entry.count >= maxPerMin) return false;
+  entry.count++;
+  return true;
+}
+
+// Bersihkan map setiap 5 menit untuk hindari memory leak
+setInterval(() => {
+  const now = Date.now();
+  for (const [k, v] of rateLimitMap.entries()) {
+    if (now > v.resetAt) rateLimitMap.delete(k);
+  }
+}, 5 * 60_000);
+
 export interface AIMessage {
   id: string;
   role: "assistant" | "user";
@@ -134,13 +158,19 @@ async function callCohereAI(
   }));
 
   try {
-    const response = await cohereClient.chat({
+    // Masalah 3d: timeout 20 detik (dari 35 detik)
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error("Cohere timeout (20s)")), 20000)
+    );
+    const responsePromise = cohereClient.chat({
       model: "command-r-plus",
       messages: [
         { role: "system", content: SYSTEM_PROMPT },
         ...cohereMessages,
       ],
     });
+
+    const response = await Promise.race([responsePromise, timeoutPromise]);
 
     const content =
       response.message?.content?.[0]?.type === "text"
@@ -308,6 +338,23 @@ function buildMarketContext(snapshot: MarketStateSnapshot): string {
     );
   } else {
     lines.push(``, `[SINYAL]: Tidak ada sinyal aktif saat ini — sistem belum mendeteksi setup valid`);
+  }
+
+  // Masalah 3c: Tambahkan riwayat 5 sinyal terakhir agar AI bisa analisis pola
+  const recentClosed = snapshot.recentSignals?.filter(
+    (s) => s.outcome === "win" || s.outcome === "loss" || s.outcome === "expired"
+  ).slice(0, 5);
+  if (recentClosed && recentClosed.length > 0) {
+    lines.push(``, `[RIWAYAT 5 SINYAL TERAKHIR]`);
+    recentClosed.forEach((s, i) => {
+      const dir = s.trend === "Bullish" ? "BUY" : "SELL";
+      const outcomeLabel = s.outcome === "win" ? "WIN" : s.outcome === "loss" ? "LOSS" : "EXPIRED";
+      const wib = toWIBString(new Date(s.timestampUTC));
+      lines.push(
+        `${i + 1}. ${dir} @ ${s.entryPrice.toFixed(2)} | SL ${s.stopLoss.toFixed(2)} | TP1 ${s.takeProfit.toFixed(2)}` +
+        ` | RR 1:${s.riskReward} | ${outcomeLabel} | ${s.confirmationType} | ${wib}`
+      );
+    });
   }
 
   return lines.join("\n");

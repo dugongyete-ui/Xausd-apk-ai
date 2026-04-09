@@ -14,7 +14,7 @@ import * as Haptics from "expo-haptics";
 import C from "@/constants/colors";
 import { useTrading, TradingSignal } from "@/contexts/TradingContext";
 
-function OutcomeBadge({ outcome }: { outcome?: "win" | "loss" | "pending" }) {
+function OutcomeBadge({ outcome }: { outcome?: "win" | "loss" | "pending" | "expired" }) {
   if (!outcome || outcome === "pending") {
     return (
       <View style={[outcomeBadgeStyles.badge, { backgroundColor: "rgba(59,130,246,0.15)" }]}>
@@ -28,6 +28,14 @@ function OutcomeBadge({ outcome }: { outcome?: "win" | "loss" | "pending" }) {
       <View style={[outcomeBadgeStyles.badge, { backgroundColor: "rgba(16,185,129,0.15)" }]}>
         <Ionicons name="checkmark-circle" size={11} color={C.green} />
         <Text style={[outcomeBadgeStyles.text, { color: C.green }]}>WIN</Text>
+      </View>
+    );
+  }
+  if (outcome === "expired") {
+    return (
+      <View style={[outcomeBadgeStyles.badge, { backgroundColor: "rgba(107,114,128,0.15)" }]}>
+        <Ionicons name="time-outline" size={11} color="#9ca3af" />
+        <Text style={[outcomeBadgeStyles.text, { color: "#9ca3af" }]}>EXPIRED</Text>
       </View>
     );
   }

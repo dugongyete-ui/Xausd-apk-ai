@@ -112,7 +112,7 @@ export interface TradingSignal {
   status: "active" | "closed";
   signalCandleEpoch: number;
   confirmationType: ConfirmationType;
-  outcome?: "win" | "loss" | "pending";
+  outcome?: "win" | "loss" | "pending" | "expired";
   sessionTag?: "active" | "low_confidence";
   effectiveSL?: number;
   marketRegime?: "trending" | "ranging" | "unknown";
@@ -164,7 +164,7 @@ const M15_COUNT = 300;
 
 // M5 — precision entry: rejection/engulfing confirmation
 const M5_GRAN = 300;
-const M5_COUNT = 100;
+const M5_COUNT = 200;  // Masalah 1a: naikkan dari 100 → 200 candle (~16 jam)
 
 const ATR_PERIOD = 14;
 const EMA20_PERIOD = 20;
@@ -285,9 +285,11 @@ function findSwings(candles: Candle[]): { bullish: SwingResult | null; bearish: 
     dir: "up" | "down"
   ): boolean {
     const span = toIdx - fromIdx;
-    if (span < 3 || span > 25) return false;
+    if (span < 3 || span > 40) return false;  // Masalah 1b: span 25→40
     const range = Math.abs(toPrice - fromPrice);
-    if (range < 5) return false;
+    // Masalah 1c: ATR-relative min range (0.3×ATR), fallback 3
+    const atrLocal = calcATR(slice, 14);
+    if (range < Math.max(3, atrLocal * 0.3)) return false;
     for (let j = fromIdx; j <= toIdx; j++) {
       if (dir === "up"   && slice[j].low  < fromPrice - range * 0.30) return false;
       if (dir === "down" && slice[j].high > fromPrice + range * 0.30) return false;
@@ -734,6 +736,68 @@ export function TradingProvider({ children }: { children: ReactNode }) {
         .catch(() => {});
     };
 
+    // Masalah 4b: SSE subscription — push real-time tanpa polling 15 detik
+    // Fallback ke polling jika SSE tidak didukung platform (native)
+    let sseSource: EventSource | null = null;
+    let sseHeartbeatTimeout: ReturnType<typeof setTimeout> | null = null;
+    let sseRetryCount = 0;
+
+    const resetHeartbeat = () => {
+      if (sseHeartbeatTimeout) clearTimeout(sseHeartbeatTimeout);
+      sseHeartbeatTimeout = setTimeout(() => {
+        // Tidak ada event selama 40 detik → reconnect
+        console.warn("[SSE] Heartbeat timeout, reconnecting...");
+        sseSource?.close();
+        connectSSE();
+      }, 40000);
+    };
+
+    const connectSSE = () => {
+      if (!BACKEND_URL || typeof EventSource === "undefined") return;
+      try {
+        sseSource = new EventSource(`${BACKEND_URL}/api/signals/stream`);
+        sseSource.onopen = () => {
+          sseRetryCount = 0;
+          resetHeartbeat();
+        };
+        sseSource.addEventListener("signal", (e) => {
+          resetHeartbeat();
+          try {
+            const newSignal = JSON.parse((e as MessageEvent).data) as TradingSignal;
+            setSignalHistory((prev) => {
+              if (savedSignalKeys.current.has(newSignal.id)) return prev;
+              savedSignalKeys.current.add(newSignal.id);
+              const merged = [newSignal, ...prev].sort(
+                (a, b) => new Date(b.timestampUTC).getTime() - new Date(a.timestampUTC).getTime()
+              );
+              AsyncStorage.setItem(STORAGE_KEY_SIGNALS, JSON.stringify(merged)).catch(() => {});
+              return merged;
+            });
+            if (!newSignal.outcome || newSignal.outcome === "pending") {
+              setActiveSignal((prev) => {
+                if (prev && (prev.outcome !== "win" && prev.outcome !== "loss" && prev.outcome !== "expired")) return prev;
+                return newSignal;
+              });
+            }
+          } catch {}
+        });
+        sseSource.addEventListener("snapshot", (e) => {
+          resetHeartbeat();
+          try {
+            const snap = JSON.parse((e as MessageEvent).data);
+            if (snap.currentPrice) setCurrentPrice(snap.currentPrice);
+            if (snap.connectionStatus) setConnectionStatus(snap.connectionStatus);
+          } catch {}
+        });
+        sseSource.onerror = () => {
+          sseRetryCount++;
+          const delay = Math.min(1000 * 2 ** sseRetryCount, 30000);
+          setTimeout(connectSSE, delay);
+        };
+      } catch {}
+    };
+
+    connectSSE();
     const syncTimer = setInterval(fetchAndMergeSignals, 15 * 1000);
 
     // ── Periodic check: restore active pending signal from backend ────────────
@@ -781,6 +845,9 @@ export function TradingProvider({ children }: { children: ReactNode }) {
     return () => {
       clearInterval(syncTimer);
       clearInterval(signalSyncTimer);
+      // Cleanup SSE
+      if (sseHeartbeatTimeout) clearTimeout(sseHeartbeatTimeout);
+      sseSource?.close();
     };
 
   }, [findLatestPendingSignal]);

@@ -106,7 +106,7 @@ export interface TradingSignal {
   status: "active" | "closed";
   signalCandleEpoch: number;
   confirmationType: "rejection" | "engulfing";
-  outcome?: "win" | "loss" | "pending";
+  outcome?: "win" | "loss" | "pending" | "expired";
   sessionTag?: "active" | "low_confidence";
   effectiveSL?: number;
   confluence?: boolean;
@@ -134,6 +134,7 @@ export interface MarketStateSnapshot {
   bullFibLevels: FibLevels | null;
   bearFibLevels: FibLevels | null;
   currentSignal: TradingSignal | null;
+  recentSignals: TradingSignal[];  // Masalah 3c: riwayat 10 sinyal terakhir untuk AI context
   inZone: boolean;
   connectionStatus: "connecting" | "connected" | "disconnected";
   marketOpen: boolean;
@@ -149,12 +150,14 @@ const SYMBOL = "frxXAUUSD";
 const M15_GRAN = 900;
 const M15_COUNT = 300;
 const M5_GRAN = 300;
-const M5_COUNT = 100;
+const M5_COUNT = 200;        // Masalah 1a: naikkan dari 100 → 200 candle (~16 jam)
 const EMA20_PERIOD = 20;
 const EMA50_PERIOD = 50;
 const ATR_PERIOD = 14;
-// M5 ATR minimum sebagai rasio dari M15 ATR (dinamis, bukan nilai statis)
 const M5_ATR_MIN_RATIO = 0.5;
+const SIGNAL_EXPIRY_MS = 5 * 60 * 60 * 1000;   // Masalah 1d: 5 jam expiry
+const MAX_DAILY_LOSS = 3;                         // Masalah 1e: maks 3 consecutive loss
+const COOLDOWN_MS    = 4 * 60 * 60 * 1000;       // Masalah 1e: 4 jam cooldown
 
 // ─── Analysis Helpers (mirrors TradingContext logic) ──────────────────────────
 function calcEMA(closes: number[], period: number): number[] {
@@ -221,14 +224,14 @@ interface SwingResult {
 // Bullish: SwingLow → SwingHigh (setup retracement BUY)
 // Bearish: SwingHigh → SwingLow (setup retracement SELL)
 // Keduanya dievaluasi mandiri — tidak ada yang "mengalahkan" yang lain.
-function findSwings(candles: Candle[]): { bullish: SwingResult | null; bearish: SwingResult | null } {
+// Masalah 1b: span diperlonggar 3–40 (dari 3–25)
+// Masalah 1c: minimum range ATR-relative (0.3 × M15 ATR), bukan hardcoded 5 poin
+function findSwings(candles: Candle[], atrM15 = 0): { bullish: SwingResult | null; bearish: SwingResult | null } {
   const LOOKBACK = Math.min(candles.length, 120);
   const slice = candles.slice(-LOOKBACK);
   const n = slice.length;
   if (n < 12) return { bullish: null, bearish: null };
 
-  // Kumpulkan fractal swing high dan low lokal (3-bar)
-  // Hindari candle terakhir (live) untuk mencegah repaint
   const swingHighs: number[] = [];
   const swingLows: number[] = [];
   for (let i = 1; i < n - 1; i++) {
@@ -240,25 +243,22 @@ function findSwings(candles: Candle[]): { bullish: SwingResult | null; bearish: 
     }
   }
 
-  // Validasi impulse: bersih, satu arah, trending konsisten
-  // Span diperlebar (3–25) agar lebih banyak struktur valid terdeteksi
   function isCleanImpulse(
     fromIdx: number, toIdx: number,
     fromPrice: number, toPrice: number,
     dir: "up" | "down"
   ): boolean {
     const span = toIdx - fromIdx;
-    if (span < 3 || span > 25) return false;
+    if (span < 3 || span > 40) return false;             // 1b: 25 → 40
     const range = Math.abs(toPrice - fromPrice);
-    if (range < 5) return false;
+    const minRange = atrM15 > 0 ? atrM15 * 0.3 : 5;    // 1c: ATR-relative
+    if (range < minRange) return false;
 
-    // Tidak ada candle yang menembus 30% range dari ujung start
     for (let j = fromIdx; j <= toIdx; j++) {
       if (dir === "up" && slice[j].low < fromPrice - range * 0.30) return false;
       if (dir === "down" && slice[j].high > fromPrice + range * 0.30) return false;
     }
 
-    // Trending: rata-rata close paruh kedua lebih ekstrem dari paruh pertama
     const mid = fromIdx + Math.floor(span / 2);
     let sumA = 0, cntA = 0, sumB = 0, cntB = 0;
     for (let j = fromIdx; j <= toIdx; j++) {
@@ -414,10 +414,18 @@ function forexMarketOpen(): boolean {
 }
 
 // ─── Session Filter ────────────────────────────────────────────────────────────
-// Returns true if the given timestamp falls within London (07:00–16:00 UTC)
-// or New York (13:00–22:00 UTC) trading sessions. Their overlap is 13:00–16:00.
+// Masalah 6c: Exclude London open 07:00–07:30 UTC dan NY open 13:00–13:30 UTC
+// sebagai "spike zone" (volatilitas tinggi, sering sweep SL).
 function isActiveSession(epochMs: number): boolean {
-  const utcHour = new Date(epochMs).getUTCHours();
+  const d = new Date(epochMs);
+  const utcHour = d.getUTCHours();
+  const utcMin  = d.getUTCMinutes();
+  const minsInDay = utcHour * 60 + utcMin;
+
+  const londonSpike = minsInDay >= 7 * 60 && minsInDay < 7 * 60 + 30;
+  const nySpike     = minsInDay >= 13 * 60 && minsInDay < 13 * 60 + 30;
+  if (londonSpike || nySpike) return false;
+
   const london  = utcHour >= 7  && utcHour < 16;
   const newYork = utcHour >= 13 && utcHour < 22;
   return london || newYork;
@@ -440,6 +448,14 @@ class DerivService {
   private ws: WebSocket | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private marketCheckTimer: ReturnType<typeof setInterval> | null = null;
+  private reconnectAttempts = 0;               // Masalah 5d: untuk exponential backoff
+
+  // Masalah 1e: MAX_DAILY_LOSS tracking
+  private consecutiveLosses = 0;
+  private cooldownUntil: number | null = null;
+
+  // SSE clients untuk real-time push sinyal (Masalah 4b)
+  private sseClients: Set<import("express").Response> = new Set();
 
   private m15Candles: Candle[] = [];
   private m5Candles: Candle[] = [];
@@ -558,6 +574,7 @@ class DerivService {
     ws.on("open", () => {
       console.log("[DerivService] Connected to Deriv");
       this.connectionStatus = "connected";
+      this.reconnectAttempts = 0;  // reset backoff counter on successful connect
 
       ws.send(JSON.stringify({
         ticks_history: SYMBOL,
@@ -651,10 +668,14 @@ class DerivService {
       this.connectionStatus = "disconnected";
       this.ws = null;
       if (forexMarketOpen() && !this.derivMarketClosed) {
+        // Masalah 5d: exponential backoff — 1s, 2s, 4s, 8s, 16s, max 30s
+        const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempts), 30000);
+        this.reconnectAttempts++;
+        console.log(`[DerivService] Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts})...`);
         this.reconnectTimer = setTimeout(() => {
           this.reconnectTimer = null;
           this.connect();
-        }, 5000);
+        }, delay);
       }
     });
   }
@@ -750,6 +771,23 @@ class DerivService {
       if (sig.outcome && sig.outcome !== "pending") continue;
       const isBull = sig.trend === "Bullish";
       const effectiveSL = sig.effectiveSL !== undefined ? sig.effectiveSL : sig.stopLoss;
+
+      // Masalah 1d: auto-expire sinyal yang sudah > 5 jam tanpa resolve
+      const signalAge = Date.now() - new Date(sig.timestampUTC).getTime();
+      if (signalAge > SIGNAL_EXPIRY_MS) {
+        sig.outcome = "expired";
+        changed = true;
+        console.log(`[DerivService] Signal ${sig.id} expired after ${Math.round(signalAge / 3600000)}h`);
+        this.consecutiveLosses++;
+        if (this.consecutiveLosses >= MAX_DAILY_LOSS && !this.cooldownUntil) {
+          this.cooldownUntil = Date.now() + COOLDOWN_MS;
+          console.log(`[DerivService] MAX_DAILY_LOSS reached (${MAX_DAILY_LOSS}) — 4h cooldown aktif`);
+        }
+        if (isBull) { this.activeBuySignalId = null; this.bullAnchorSignaled = null; }
+        else         { this.activeSellSignalId = null; this.bearAnchorSignaled = null; }
+        continue;
+      }
+
       const tp1Hit = isBull ? price >= sig.takeProfit : price <= sig.takeProfit;
       const tp2Hit = sig.takeProfit2 !== undefined
         ? (isBull ? price >= sig.takeProfit2 : price <= sig.takeProfit2)
@@ -759,29 +797,37 @@ class DerivService {
       if (tp2Hit) {
         sig.outcome = "win";
         changed = true;
+        this.consecutiveLosses = 0;
+        this.cooldownUntil = null;
         console.log(`[DerivService] Signal ${sig.id} hit TP2 → WIN @ ${price}`);
         this.triggerOutcomeCommentary(sig.id, "win");
-        if (sig.trend === "Bullish") { this.activeBuySignalId = null; this.bullAnchorSignaled = null; }
-        else                         { this.activeSellSignalId = null; this.bearAnchorSignaled = null; }
+        if (isBull) { this.activeBuySignalId = null; this.bullAnchorSignaled = null; }
+        else         { this.activeSellSignalId = null; this.bearAnchorSignaled = null; }
       } else if (tp1Hit && sig.effectiveSL === undefined) {
-        // TP1 hit for the first time — trail SL to breakeven and continue monitoring TP2
         sig.effectiveSL = sig.entryPrice;
         changed = true;
         console.log(`[DerivService] Signal ${sig.id} hit TP1 → SL trailed to breakeven @ ${sig.entryPrice}`);
       } else if (slHit) {
-        // Effective SL hit (either original SL or trailed breakeven)
         const isBreakevenStop = sig.effectiveSL !== undefined;
         sig.outcome = isBreakevenStop ? "win" : "loss";
         changed = true;
         if (isBreakevenStop) {
+          this.consecutiveLosses = 0;
+          this.cooldownUntil = null;
           console.log(`[DerivService] Signal ${sig.id} hit breakeven SL → WIN (TP1 locked) @ ${price}`);
           this.triggerOutcomeCommentary(sig.id, "win");
         } else {
-          console.log(`[DerivService] Signal ${sig.id} hit SL → LOSS @ ${price}`);
+          // Masalah 1e: hitung consecutive loss
+          this.consecutiveLosses++;
+          if (this.consecutiveLosses >= MAX_DAILY_LOSS && !this.cooldownUntil) {
+            this.cooldownUntil = Date.now() + COOLDOWN_MS;
+            console.log(`[DerivService] MAX_DAILY_LOSS reached (${MAX_DAILY_LOSS}) — 4h cooldown aktif`);
+          }
+          console.log(`[DerivService] Signal ${sig.id} hit SL → LOSS @ ${price} (consecutive: ${this.consecutiveLosses})`);
           this.triggerOutcomeCommentary(sig.id, "loss");
         }
-        if (sig.trend === "Bullish") { this.activeBuySignalId = null; this.bullAnchorSignaled = null; }
-        else                         { this.activeSellSignalId = null; this.bearAnchorSignaled = null; }
+        if (isBull) { this.activeBuySignalId = null; this.bullAnchorSignaled = null; }
+        else         { this.activeSellSignalId = null; this.bearAnchorSignaled = null; }
       }
     }
     if (changed) saveSignals(this.signalHistory);
@@ -795,7 +841,9 @@ class DerivService {
 
     this.monitorPendingSignals();
 
-    const swings = findSwings(this.m15Candles);
+    // Hitung ATR M15 terlebih dahulu untuk dipakai di findSwings (Masalah 1c)
+    const atrM15 = calcATR(this.m15Candles, ATR_PERIOD);
+    const swings = findSwings(this.m15Candles, atrM15);
 
     // ── Update Fibonacci BUY ──────────────────────────────────────────────
     if (swings.bullish) {
@@ -871,6 +919,19 @@ class DerivService {
 
     if (!fib || !anchorEpoch || this.m5Candles.length < 3) {
       return null;
+    }
+
+    // Masalah 1e: cooldown setelah MAX_DAILY_LOSS consecutive losses
+    if (this.cooldownUntil && Date.now() < this.cooldownUntil) {
+      const minsLeft = Math.round((this.cooldownUntil - Date.now()) / 60000);
+      if (minsLeft % 60 === 0) {
+        console.log(`[DerivService] In cooldown — ${minsLeft} menit tersisa`);
+      }
+      return null;
+    } else if (this.cooldownUntil && Date.now() >= this.cooldownUntil) {
+      this.cooldownUntil = null;
+      this.consecutiveLosses = 0;
+      console.log("[DerivService] Cooldown selesai — sinyal kembali aktif");
     }
 
     // ── Task 1: Cooldown — max 1 active signal per direction ──────────────────
@@ -963,8 +1024,20 @@ class DerivService {
     const isEngulfing  = checkEngulfing(prevM5, closedM5, trend);
     if (!isRejection && !isEngulfing) return null;
 
-    const confirmationType = isEngulfing ? "engulfing" : "rejection";
     const sl = trend === "Bullish" ? fib.swingLow : fib.swingHigh;
+
+    // Masalah 6b: Engulfing WAJIB ada confluence round number (25 atau 50)
+    // Pin Bar Rejection tidak memerlukan confluence wajib
+    if (isEngulfing && !isRejection) {
+      const zoneCenter = (closedM5.close + sl) / 2;
+      const nearRound = [25, 50].some((step) => {
+        const nearest = Math.round(zoneCenter / step) * step;
+        return Math.abs(zoneCenter - nearest) <= 3;
+      });
+      if (!nearRound) return null;
+    }
+
+    const confirmationType = isEngulfing ? "engulfing" : "rejection";
 
     // Dedup: satu sinyal per candle M5 closed per arah
     if (lastSigEpoch === closedM5.epoch) {
@@ -982,11 +1055,16 @@ class DerivService {
     if (slDistance < atrM15 * 0.3) return null;
     if (slDistance < 2.0) return null;
 
-    // ── Task 3: TP2 = Fib 127.2% + 0.5× ATR M15 ──────────────────────────────
-    // More reachable than previous 161.8% for M5 scalping conditions
+    // ── Task 3: TP2 = Fib 127.2% + 0.5× ATR M15, dengan cap 3× ATR M15 (6e) ──
+    const tp2Raw = trend === "Bearish"
+      ? fib.swingLow - range * 0.272 - atrM15 * 0.5
+      : fib.swingHigh + range * 0.272 + atrM15 * 0.5;
+    const maxTp2Dist = atrM15 * 3;
+    const tp2RawDist = Math.abs(tp2Raw - entryPrice);
+    const tp2Dist_capped = atrM15 > 0 ? Math.min(tp2RawDist, maxTp2Dist) : tp2RawDist;
     const tp2 = trend === "Bearish"
-      ? fib.swingLow - range * 0.272 - atrM15 * 0.5   // 127.2% + 0.5 ATR below entry
-      : fib.swingHigh + range * 0.272 + atrM15 * 0.5; // 127.2% + 0.5 ATR above entry
+      ? entryPrice - tp2Dist_capped
+      : entryPrice + tp2Dist_capped;
 
     // ── TP1: minimum 1:1 RR from entry (SL distance), clamped to not exceed TP2 ──
     const tp1Raw = trend === "Bearish" ? entryPrice - slDistance : entryPrice + slDistance;
@@ -1086,6 +1164,9 @@ class DerivService {
         `Konfirmasi: ${confirmationType}`
       );
 
+      // Masalah 4b: Push sinyal ke semua SSE clients secara real-time
+      this.emitSSE("signal", signal);
+
       // ── Kirim Push Notification ke semua device terdaftar ─────────────────
       const isBull = trend === "Bullish";
       const dirEmoji = isBull ? "🟢" : "🔴";
@@ -1123,6 +1204,29 @@ class DerivService {
     }
 
     return signal;
+  }
+
+  // ─── SSE Client Management (Masalah 4b) ─────────────────────────────────────
+  addSSEClient(res: import("express").Response): void {
+    this.sseClients.add(res);
+    console.log(`[SSE] Client connected. Total: ${this.sseClients.size}`);
+  }
+
+  removeSSEClient(res: import("express").Response): void {
+    this.sseClients.delete(res);
+    console.log(`[SSE] Client disconnected. Total: ${this.sseClients.size}`);
+  }
+
+  private emitSSE(event: string, data: unknown): void {
+    if (this.sseClients.size === 0) return;
+    const msg = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+    for (const client of this.sseClients) {
+      try {
+        client.write(msg);
+      } catch {
+        this.sseClients.delete(client);
+      }
+    }
   }
 
   // ─── AI Outcome Commentary ─────────────────────────────────────────────────
@@ -1214,6 +1318,7 @@ class DerivService {
       bullFibLevels: this.bullFibLevels,
       bearFibLevels: this.bearFibLevels,
       currentSignal: this.currentSignal,
+      recentSignals: this.signalHistory.slice(0, 10),  // Masalah 3c: 10 sinyal terakhir untuk AI
       inZone,
       connectionStatus: this.connectionStatus,
       marketOpen: forexMarketOpen(),

@@ -580,14 +580,78 @@ class AIService {
     this.lastZoneKeys[dir] = null;
   }
 
-  // ─── Outcome Commentary (auto-triggered on TP/SL) ──────────────────────────
+  // ─── TP1 Hit Alert (instant notification, no AI call needed) ───────────────
+  // Segera kirim notifikasi saat TP1 tercapai — SL geser ke breakeven.
+  // Gunakan flagnya sendiri agar tidak terblokir oleh AI generation lain.
+  notifyTP1Hit(signal: TradingSignal): void {
+    const direction = signal.trend === "Bullish" ? "BUY" : "SELL";
+    const tp2Info = signal.takeProfit2
+      ? ` TP2 masih aktif di ${signal.takeProfit2.toFixed(2)} (RR 1:${signal.riskReward2 ?? "?"}).`
+      : " Tidak ada TP2 — trade selesai.";
+
+    const instant =
+      `TP1 ${direction} tercapai di ${signal.takeProfit.toFixed(2)}! ` +
+      `SL sudah otomatis digeser ke breakeven (entry ${signal.entryPrice.toFixed(2)}) — posisi sekarang risk-free.` +
+      tp2Info +
+      ` Pantau pergerakan, jangan buru-buru tutup jika TP2 masih dalam jangkauan.`;
+
+    this.addDisplayMessage({
+      role: "assistant",
+      content: instant,
+      type: "outcome",
+      metadata: {
+        signalId: signal.id,
+        trend: signal.trend,
+        outcome: "win",
+        entryPrice: signal.entryPrice,
+      },
+    });
+
+    console.log(`[AIService] TP1 alert sent: ${direction} @ ${signal.takeProfit.toFixed(2)}`);
+
+    // Trigger AI elaboration in background (non-blocking, separate from isGenerating)
+    const snapshot = { currentPrice: null, trend: "Loading" } as unknown as MarketStateSnapshot;
+    this.generateTP1Elaboration(signal, snapshot).catch((e) =>
+      console.error("[AIService] TP1 elaboration error:", e)
+    );
+  }
+
+  private async generateTP1Elaboration(signal: TradingSignal, _snapshot: MarketStateSnapshot): Promise<void> {
+    if (this.isGenerating) return;
+    this.isGenerating = true;
+    const direction = signal.trend === "Bullish" ? "BUY" : "SELL";
+    const tp2Info = signal.takeProfit2
+      ? ` TP2 target: ${signal.takeProfit2.toFixed(2)} (RR 1:${signal.riskReward2 ?? "?"}).`
+      : "";
+    const userMsg =
+      `TP1 sinyal ${direction} XAUUSD baru saja tercapai di ${signal.takeProfit.toFixed(2)}. ` +
+      `Entry: ${signal.entryPrice.toFixed(2)}, SL asli: ${signal.stopLoss.toFixed(2)}.${tp2Info} ` +
+      `SL sudah otomatis geser ke breakeven. ` +
+      `Tulis 1-2 kalimat singkat saja: apresiasi, ingatkan pantau TP2 jika ada, tetap disiplin. Teks biasa tanpa format.`;
+    try {
+      const response = await callCohereAI([{ role: "user", content: userMsg }]);
+      if (!response) return;
+      const clean = stripMarkdown(response);
+      this.addToHistory("assistant", clean);
+    } catch (e) {
+      console.error("[AIService] TP1 elaboration failed:", (e as Error).message);
+    } finally {
+      this.isGenerating = false;
+    }
+  }
+
+  // ─── Outcome Commentary (auto-triggered on TP2/SL) ─────────────────────────
+  // Gunakan flag isGeneratingOutcome agar tidak terblokir oleh AI call lain
+  // (zone alert, signal recommendation, dll).
   async generateOutcomeCommentary(
     signal: TradingSignal,
     outcome: "win" | "loss",
     snapshot: MarketStateSnapshot
   ): Promise<void> {
-    if (this.isGenerating) return;
-    this.isGenerating = true;
+    // Outcome commentary adalah prioritas tinggi — tidak peduli isGenerating lain
+    // tapi tetap tunggu jika ada outcome lain yang sedang diproses.
+    if (this.isGeneratingOutcome) return;
+    this.isGeneratingOutcome = true;
 
     const direction = signal.trend === "Bullish" ? "BUY" : "SELL";
     const outcomeLabel = outcome === "win" ? "TP TERCAPAI WIN" : "SL TERCAPAI LOSS";
@@ -597,10 +661,11 @@ class AIService {
       `${marketCtx}\n\n` +
       `HASIL TRADE: ${outcomeLabel}\n` +
       `Arah: ${direction} XAUUSD\n` +
-      `Entry: ${signal.entryPrice.toFixed(2)} | SL: ${signal.stopLoss.toFixed(2)} | TP: ${signal.takeProfit.toFixed(2)}\n\n` +
+      `Entry: ${signal.entryPrice.toFixed(2)} | SL: ${signal.stopLoss.toFixed(2)} | TP: ${signal.takeProfit.toFixed(2)}` +
+      (signal.takeProfit2 ? ` | TP2: ${signal.takeProfit2.toFixed(2)}` : "") + `\n\n` +
       (outcome === "win"
-        ? `TP berhasil dicapai. Berikan komentar singkat, sebutkan level yang berhasil dan dorong untuk tetap disiplin pada strategi. Tulis teks biasa tanpa format.`
-        : `SL tercapai. Berikan komentar singkat. Ingatkan bahwa loss adalah bagian normal dari trading dan disiplin SL melindungi akun. Tulis teks biasa tanpa format.`);
+        ? `TP berhasil dicapai. Berikan komentar singkat — sebutkan level yang berhasil, dorong disiplin, ingatkan risiko trade berikutnya. Tulis teks biasa tanpa format, maksimal 3 kalimat.`
+        : `SL tercapai. Berikan komentar singkat — ingatkan bahwa loss normal, disiplin SL melindungi akun, setup berikutnya harus tetap ikut sistem. Teks biasa, maksimal 3 kalimat.`);
 
     console.log(`[AIService] Generating outcome commentary: ${outcomeLabel}`);
 
@@ -609,12 +674,11 @@ class AIService {
         this.buildMessagesWithHistory(userMsg)
       );
 
-      if (!response) {
-        console.warn("[AIService] Empty response for outcome commentary");
-        return;
-      }
+      const fallback = outcome === "win"
+        ? `Trade ${direction} selesai dengan WIN. TP tercapai dengan baik — sistem bekerja sesuai rencana. Tetap disiplin untuk setup berikutnya.`
+        : `Trade ${direction} kena SL — ini bagian normal dari trading. Disiplin SL melindungi akun dari kerugian besar. Reset dan tunggu setup berikutnya yang valid.`;
 
-      const clean = stripMarkdown(response);
+      const clean = response ? stripMarkdown(response) : fallback;
 
       this.addToHistory("user", userMsg);
       this.addToHistory("assistant", clean);
@@ -632,8 +696,10 @@ class AIService {
       });
 
       console.log(`[AIService] Outcome commentary done`);
+    } catch (e) {
+      console.error("[AIService] Outcome commentary error:", (e as Error).message);
     } finally {
-      this.isGenerating = false;
+      this.isGeneratingOutcome = false;
     }
   }
 

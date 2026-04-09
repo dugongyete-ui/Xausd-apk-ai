@@ -106,6 +106,8 @@ export interface TradingSignal {
   signalCandleEpoch: number;
   confirmationType: "rejection" | "engulfing";
   outcome?: "win" | "loss" | "pending";
+  sessionTag?: "active" | "low_confidence";
+  effectiveSL?: number;
 }
 
 export type TrendState = "Bullish" | "Bearish" | "No Trade" | "Loading";
@@ -404,6 +406,16 @@ function forexMarketOpen(): boolean {
   return true;
 }
 
+// ─── Session Filter ────────────────────────────────────────────────────────────
+// Returns true if the given timestamp falls within London (07:00–16:00 UTC)
+// or New York (13:00–22:00 UTC) trading sessions. Their overlap is 13:00–16:00.
+function isActiveSession(epochMs: number): boolean {
+  const utcHour = new Date(epochMs).getUTCHours();
+  const london  = utcHour >= 7  && utcHour < 16;
+  const newYork = utcHour >= 13 && utcHour < 22;
+  return london || newYork;
+}
+
 function parseCandle(c: { open: string; high: string; low: string; close: string; epoch: number }): Candle | null {
   const parsed = {
     open: parseFloat(c.open),
@@ -457,6 +469,24 @@ class DerivService {
       (a, b) => new Date(b.timestampUTC).getTime() - new Date(a.timestampUTC).getTime()
     )[0];
   })();
+
+  // ── Per-direction active signal tracking (Task 1) ─────────────────────────
+  // Max 1 active (unresolved) signal per direction at any time.
+  // Hydrated from persisted pending signals on startup so restarts don't bypass cooldown.
+  private activeBuySignalId: string | null = (() => {
+    const pending = this.signalHistory.filter((s) => s.outcome === "pending" && s.trend === "Bullish");
+    if (pending.length === 0) return null;
+    return pending.sort((a, b) => new Date(b.timestampUTC).getTime() - new Date(a.timestampUTC).getTime())[0].id;
+  })();
+  private activeSellSignalId: string | null = (() => {
+    const pending = this.signalHistory.filter((s) => s.outcome === "pending" && s.trend === "Bearish");
+    if (pending.length === 0) return null;
+    return pending.sort((a, b) => new Date(b.timestampUTC).getTime() - new Date(a.timestampUTC).getTime())[0].id;
+  })();
+  // anchorEpoch is not persisted in signal storage so we cannot hydrate it — set to null and let
+  // the first resolved signal clear it, or wait for the Fibonacci anchor to change.
+  private bullAnchorSignaled: number | null = null;
+  private bearAnchorSignaled: number | null = null;
 
   private derivMarketClosed = false;
 
@@ -657,11 +687,17 @@ class DerivService {
     if (dir === "Bullish") {
       this.lastBullSwing    = newState;
       this.bullFibLevels    = newFib;
-      if (anchorChanged) this.lastBullSignaledEpoch = null;
+      if (anchorChanged) {
+        this.lastBullSignaledEpoch = null;
+        this.bullAnchorSignaled    = null;
+      }
     } else {
       this.lastBearSwing    = newState;
       this.bearFibLevels    = newFib;
-      if (anchorChanged) this.lastBearSignaledEpoch = null;
+      if (anchorChanged) {
+        this.lastBearSignaledEpoch = null;
+        this.bearAnchorSignaled    = null;
+      }
     }
 
     const anchorDate = new Date(swing.anchorEpoch * 1000).toISOString();
@@ -679,24 +715,66 @@ class DerivService {
     if (this.currentPrice === null) return;
     const price = this.currentPrice;
     let changed = false;
+
+    // ── Reconcile active-direction state ─────────────────────────────────────
+    // On each tick, ensure active*SignalId refers to the most recent unresolved
+    // pending signal per direction. This handles legacy data with multiple
+    // pending signals per direction or stale IDs after restart.
+    const pendingBull = this.signalHistory
+      .filter((s) => s.trend === "Bullish" && (!s.outcome || s.outcome === "pending"))
+      .sort((a, b) => new Date(b.timestampUTC).getTime() - new Date(a.timestampUTC).getTime());
+    const pendingSell = this.signalHistory
+      .filter((s) => s.trend === "Bearish" && (!s.outcome || s.outcome === "pending"))
+      .sort((a, b) => new Date(b.timestampUTC).getTime() - new Date(a.timestampUTC).getTime());
+    if (pendingBull.length > 0 && this.activeBuySignalId !== pendingBull[0].id) {
+      this.activeBuySignalId = pendingBull[0].id;
+    } else if (pendingBull.length === 0 && this.activeBuySignalId !== null) {
+      this.activeBuySignalId = null;
+      this.bullAnchorSignaled = null;
+    }
+    if (pendingSell.length > 0 && this.activeSellSignalId !== pendingSell[0].id) {
+      this.activeSellSignalId = pendingSell[0].id;
+    } else if (pendingSell.length === 0 && this.activeSellSignalId !== null) {
+      this.activeSellSignalId = null;
+      this.bearAnchorSignaled = null;
+    }
+
     for (const sig of this.signalHistory) {
       if (sig.outcome && sig.outcome !== "pending") continue;
       const isBull = sig.trend === "Bullish";
+      const effectiveSL = sig.effectiveSL !== undefined ? sig.effectiveSL : sig.stopLoss;
       const tp1Hit = isBull ? price >= sig.takeProfit : price <= sig.takeProfit;
       const tp2Hit = sig.takeProfit2 !== undefined
         ? (isBull ? price >= sig.takeProfit2 : price <= sig.takeProfit2)
         : false;
-      const slHit = isBull ? price <= sig.stopLoss : price >= sig.stopLoss;
-      if (tp1Hit || tp2Hit) {
+      const slHit = isBull ? price <= effectiveSL : price >= effectiveSL;
+
+      if (tp2Hit) {
         sig.outcome = "win";
         changed = true;
-        console.log(`[DerivService] Signal ${sig.id} hit TP${tp2Hit ? "2" : "1"} → WIN @ ${price}`);
+        console.log(`[DerivService] Signal ${sig.id} hit TP2 → WIN @ ${price}`);
         this.triggerOutcomeCommentary(sig.id, "win");
-      } else if (slHit) {
-        sig.outcome = "loss";
+        if (sig.trend === "Bullish") { this.activeBuySignalId = null; this.bullAnchorSignaled = null; }
+        else                         { this.activeSellSignalId = null; this.bearAnchorSignaled = null; }
+      } else if (tp1Hit && sig.effectiveSL === undefined) {
+        // TP1 hit for the first time — trail SL to breakeven and continue monitoring TP2
+        sig.effectiveSL = sig.entryPrice;
         changed = true;
-        console.log(`[DerivService] Signal ${sig.id} hit SL → LOSS @ ${price}`);
-        this.triggerOutcomeCommentary(sig.id, "loss");
+        console.log(`[DerivService] Signal ${sig.id} hit TP1 → SL trailed to breakeven @ ${sig.entryPrice}`);
+      } else if (slHit) {
+        // Effective SL hit (either original SL or trailed breakeven)
+        const isBreakevenStop = sig.effectiveSL !== undefined;
+        sig.outcome = isBreakevenStop ? "win" : "loss";
+        changed = true;
+        if (isBreakevenStop) {
+          console.log(`[DerivService] Signal ${sig.id} hit breakeven SL → WIN (TP1 locked) @ ${price}`);
+          this.triggerOutcomeCommentary(sig.id, "win");
+        } else {
+          console.log(`[DerivService] Signal ${sig.id} hit SL → LOSS @ ${price}`);
+          this.triggerOutcomeCommentary(sig.id, "loss");
+        }
+        if (sig.trend === "Bullish") { this.activeBuySignalId = null; this.bullAnchorSignaled = null; }
+        else                         { this.activeSellSignalId = null; this.bearAnchorSignaled = null; }
       }
     }
     if (changed) saveSignals(this.signalHistory);
@@ -788,6 +866,23 @@ class DerivService {
       return null;
     }
 
+    // ── Task 1: Cooldown — max 1 active signal per direction ──────────────────
+    // Block new signal if same anchorEpoch already produced an unresolved signal
+    // or if a signal for this direction is still pending (active).
+    const anchorSignaled = trend === "Bullish" ? this.bullAnchorSignaled : this.bearAnchorSignaled;
+    const activeId       = trend === "Bullish" ? this.activeBuySignalId  : this.activeSellSignalId;
+
+    if (anchorSignaled === anchorEpoch) {
+      // AnchorEpoch already produced an unresolved signal in this direction
+      const existing = activeId ? this.signalHistory.find((s) => s.id === activeId) ?? null : null;
+      return existing;
+    }
+    if (activeId !== null) {
+      // Another signal in this direction is still unresolved
+      const existing = this.signalHistory.find((s) => s.id === activeId) ?? null;
+      return existing;
+    }
+
     // ── TAHAP 1: Guard M15 — EMA50 structure confirmation ─────────────────
     // BUY wajib: harga M15 > EMA50. SELL wajib: harga M15 < EMA50.
     // Jika M15 tidak mendukung arah, sinyal TIDAK diproses sama sekali.
@@ -803,6 +898,20 @@ class DerivService {
         if (trend === "Bearish" && lastM15Close >= ema50) {
           return null;
         }
+      }
+    }
+
+    // ── Task 4: EMA20 M5 micro-trend confirmation ──────────────────────────
+    // BUY requires EMA20 M5 > EMA50 M5; SELL requires the inverse.
+    if (this.m5Candles.length >= EMA50_PERIOD) {
+      const m5Closes = this.m5Candles.map((c) => c.close);
+      const ema20Arr = calcEMA(m5Closes, EMA20_PERIOD);
+      const ema50Arr = calcEMA(m5Closes, EMA50_PERIOD);
+      if (ema20Arr.length > 0 && ema50Arr.length > 0) {
+        const ema20m5 = ema20Arr[ema20Arr.length - 1];
+        const ema50m5 = ema50Arr[ema50Arr.length - 1];
+        if (trend === "Bullish" && ema20m5 <= ema50m5) return null;
+        if (trend === "Bearish" && ema20m5 >= ema50m5) return null;
       }
     }
 
@@ -853,7 +962,11 @@ class DerivService {
     // Gunakan harga penutupan candle M5 (bukan harga live) sebagai entry
     const entryPrice = closedM5.close;
     const slDistance = Math.abs(entryPrice - sl);
-    if (slDistance < atrM15 * 0.1) return null;
+
+    // ── Task 2: Minimum SL distance filter ────────────────────────────────────
+    // Reject if SL distance < 0.3× ATR M15 or < 2.0 points (noise floor for XAUUSD)
+    if (slDistance < atrM15 * 0.3) return null;
+    if (slDistance < 2.0) return null;
 
     // ── TP1: Fibonacci 127.2% extension dari swing impulse (struktur-anchored) ──
     // Level 127.2% = swingHigh + range × 0.272 (Bullish) / swingLow - range × 0.272 (Bearish)
@@ -870,11 +983,11 @@ class DerivService {
       : Math.min(tp1FibLevel, tp1AtrLevel); // lebih kecil = lebih dekat untuk BUY
     const tp1Dist = Math.abs(tp1 - entryPrice);
 
-    // ── TP2: Fibonacci 161.8% extension dari swing impulse (struktur-anchored) ──
-    // Level 161.8% = swingHigh + range × 0.618 (Bullish) / swingLow - range × 0.618 (Bearish)
+    // ── Task 3: TP2 = Fib 127.2% + 0.5× ATR M15 ──────────────────────────────
+    // More reachable than previous 161.8% for M5 scalping conditions
     const tp2 = trend === "Bearish"
-      ? fib.swingLow - range * 0.618   // 161.8% ext: bearish impuls turun
-      : fib.swingHigh + range * 0.618; // 161.8% ext: bullish impuls naik
+      ? fib.swingLow - range * 0.272 - atrM15 * 0.5   // 127.2% + 0.5 ATR below entry
+      : fib.swingHigh + range * 0.272 + atrM15 * 0.5; // 127.2% + 0.5 ATR above entry
     const tp2Dist = Math.abs(tp2 - entryPrice);
 
     const rr1 = Math.round((tp1Dist / slDistance) * 100) / 100;
@@ -882,6 +995,12 @@ class DerivService {
 
     const nowMs = Date.now();
     const sigId = `${closedM5.epoch}_${trend}`;
+
+    // ── Task 5: Session filter — tag signal as low_confidence if outside active sessions ──
+    const sessionTag: "active" | "low_confidence" = isActiveSession(nowMs) ? "active" : "low_confidence";
+    if (!isActiveSession(nowMs)) {
+      console.log(`[DerivService] ${trend} signal outside active session — tagged low_confidence`);
+    }
 
     // lotSize: kalkulasi berdasarkan default balance $10.000, risk 1% per trade
     const defaultBalance = 10000;
@@ -906,6 +1025,7 @@ class DerivService {
       signalCandleEpoch: closedM5.epoch,
       confirmationType,
       outcome: "pending",
+      sessionTag,
     };
 
     // Simpan sinyal baru ke history (hanya sekali per sigId)
@@ -915,6 +1035,15 @@ class DerivService {
       // Update epoch dedup per arah
       if (trend === "Bullish") this.lastBullSignaledEpoch = closedM5.epoch;
       else                      this.lastBearSignaledEpoch = closedM5.epoch;
+
+      // Task 1: register this signal as the active one for this direction & anchor
+      if (trend === "Bullish") {
+        this.activeBuySignalId = sigId;
+        this.bullAnchorSignaled = anchorEpoch;
+      } else {
+        this.activeSellSignalId = sigId;
+        this.bearAnchorSignaled = anchorEpoch;
+      }
 
       this.fibTrend = trend;
       this.signalHistory.unshift(signal);
@@ -1090,6 +1219,11 @@ class DerivService {
     this.signalHistory = [];
     this.savedSignalKeys.clear();
     this.currentSignal = null;
+    // Reset per-direction cooldown state so signal generation is not blocked after clear
+    this.activeBuySignalId  = null;
+    this.activeSellSignalId = null;
+    this.bullAnchorSignaled = null;
+    this.bearAnchorSignaled = null;
     clearAllSignals();
     console.log("[DerivService] Signal history cleared by client request");
   }

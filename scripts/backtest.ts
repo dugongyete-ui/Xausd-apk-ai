@@ -34,9 +34,11 @@ interface BacktestSignal {
   rr2: number;
   signalEpoch: number;
   confirmationType: "rejection" | "engulfing";
-  outcome: "win_tp1" | "win_tp2" | "loss" | "expired";
+  outcome: "win_tp2" | "win_breakeven" | "loss" | "expired";
   resolvedEpoch?: number;
   resolutionNote: string;
+  sessionTag: "active" | "low_confidence";
+  anchorEpoch: number;
 }
 
 // ─── Constants ─────────────────────────────────────────────────────────────────
@@ -44,6 +46,7 @@ const DERIV_WS_URL = "wss://ws.binaryws.com/websockets/v3?app_id=1089";
 const SYMBOL = "frxXAUUSD";
 const M15_GRAN = 900;
 const M5_GRAN = 300;
+const EMA20_PERIOD = 20;
 const EMA50_PERIOD = 50;
 const ATR_PERIOD = 14;
 const M5_ATR_MIN_RATIO = 0.5;
@@ -211,6 +214,14 @@ function checkEngulfing(prev: Candle, curr: Candle, trend: "Bullish" | "Bearish"
   return curr.close <= engulfTarget && curr.open >= prev.close - prevBody * 0.35;
 }
 
+// ─── Session Filter ────────────────────────────────────────────────────────────
+function isActiveSession(epochMs: number): boolean {
+  const utcHour = new Date(epochMs).getUTCHours();
+  const london  = utcHour >= 7  && utcHour < 16;
+  const newYork = utcHour >= 13 && utcHour < 22;
+  return london || newYork;
+}
+
 // ─── Fetch historical candles from Deriv via WS ────────────────────────────────
 function fetchCandles(granularity: number, startEpoch: number, endEpoch: number): Promise<Candle[]> {
   return new Promise((resolve, reject) => {
@@ -269,10 +280,12 @@ function fetchCandles(granularity: number, startEpoch: number, endEpoch: number)
 }
 
 // ─── Evaluate outcome of a signal given subsequent candles ─────────────────────
+// Implements breakeven trailing: after TP1 is hit, SL moves to entry price,
+// trade continues monitoring for TP2. If breakeven SL is hit → win_breakeven.
 function evaluateOutcome(
   signal: { trend: "Bullish" | "Bearish"; entryPrice: number; stopLoss: number; takeProfit1: number; takeProfit2: number; signalEpoch: number },
   allM5Candles: Candle[]
-): { outcome: "win_tp1" | "win_tp2" | "loss" | "expired"; resolvedEpoch?: number; resolutionNote: string } {
+): { outcome: "win_tp2" | "win_breakeven" | "loss" | "expired"; resolvedEpoch?: number; resolutionNote: string } {
   const signalIdx = allM5Candles.findIndex((c) => c.epoch >= signal.signalEpoch);
   if (signalIdx < 0) return { outcome: "expired", resolutionNote: "candle not found" };
 
@@ -280,27 +293,45 @@ function evaluateOutcome(
   const endIdx = Math.min(startIdx + MAX_SIGNAL_LOOKAHEAD_BARS, allM5Candles.length);
   const isBull = signal.trend === "Bullish";
 
+  let effectiveSL = signal.stopLoss;
+  let tp1Locked = false;
+
   for (let i = startIdx; i < endIdx; i++) {
     const c = allM5Candles[i];
     const tp2Hit = isBull ? c.high >= signal.takeProfit2 : c.low <= signal.takeProfit2;
     const tp1Hit = isBull ? c.high >= signal.takeProfit1 : c.low <= signal.takeProfit1;
-    const slHit  = isBull ? c.low  <= signal.stopLoss    : c.high >= signal.stopLoss;
+    const slHit  = isBull ? c.low  <= effectiveSL        : c.high >= effectiveSL;
 
-    // Check dalam satu candle: SL vs TP — pakai heuristic arah open candle
     if (tp2Hit && !slHit) return { outcome: "win_tp2", resolvedEpoch: c.epoch, resolutionNote: `TP2 hit @ bar ${i - signalIdx}` };
-    if (tp1Hit && !slHit) return { outcome: "win_tp1", resolvedEpoch: c.epoch, resolutionNote: `TP1 hit @ bar ${i - signalIdx}` };
-    if (slHit && !tp1Hit) return { outcome: "loss",    resolvedEpoch: c.epoch, resolutionNote: `SL hit @ bar ${i - signalIdx}` };
-    // Both triggered same bar — determine by candle body direction
-    if ((tp1Hit || tp2Hit) && slHit) {
-      const candleDir = c.close > c.open ? "bull" : "bear";
-      if ((isBull && candleDir === "bull") || (!isBull && candleDir === "bear")) {
-        return { outcome: "win_tp1", resolvedEpoch: c.epoch, resolutionNote: `TP1+SL same bar, body favors entry @ bar ${i - signalIdx}` };
-      } else {
-        return { outcome: "loss", resolvedEpoch: c.epoch, resolutionNote: `TP1+SL same bar, body against entry @ bar ${i - signalIdx}` };
+
+    if (!tp1Locked) {
+      // TP1 not yet reached
+      if (tp1Hit && !slHit) {
+        // Trail SL to breakeven and continue
+        tp1Locked = true;
+        effectiveSL = signal.entryPrice;
+        continue;
       }
+      if (slHit && !tp1Hit) return { outcome: "loss", resolvedEpoch: c.epoch, resolutionNote: `SL hit @ bar ${i - signalIdx}` };
+      // Both triggered same bar before TP1 locked — use candle body heuristic
+      if (tp1Hit && slHit) {
+        const candleDir = c.close > c.open ? "bull" : "bear";
+        if ((isBull && candleDir === "bull") || (!isBull && candleDir === "bear")) {
+          tp1Locked = true;
+          effectiveSL = signal.entryPrice;
+          continue;
+        } else {
+          return { outcome: "loss", resolvedEpoch: c.epoch, resolutionNote: `TP1+SL same bar, body against entry @ bar ${i - signalIdx}` };
+        }
+      }
+    } else {
+      // TP1 already hit — monitoring breakeven stop vs TP2
+      if (slHit) return { outcome: "win_breakeven", resolvedEpoch: c.epoch, resolutionNote: `Breakeven SL hit after TP1 @ bar ${i - signalIdx}` };
     }
   }
-  return { outcome: "expired", resolutionNote: `Belum resolve dalam ${MAX_SIGNAL_LOOKAHEAD_BARS} bar M5` };
+  // With breakeven trailing, TP1 alone is not terminal — trade stays open until TP2 or trailing SL.
+  // If neither resolved within lookahead, classify as expired regardless of TP1 state.
+  return { outcome: "expired", resolutionNote: `Belum resolve dalam ${MAX_SIGNAL_LOOKAHEAD_BARS} bar M5${tp1Locked ? " (TP1 hit, awaiting TP2/BE)" : ""}` };
 }
 
 // ─── Main Backtest ─────────────────────────────────────────────────────────────
@@ -347,6 +378,42 @@ async function runBacktest() {
   const signals: BacktestSignal[] = [];
   const seenSignalIds = new Set<string>();
 
+  // Task 1: per-direction cooldown tracking
+  const activeBuyId:  { id: string | null; anchor: number | null } = { id: null, anchor: null };
+  const activeSellId: { id: string | null; anchor: number | null } = { id: null, anchor: null };
+
+  // Helper: check if a signal has fully resolved given subsequent candles up to a given index.
+  // Mirrors live breakeven-trailing model: trade resolves only at TP2 or effective SL.
+  // After TP1 is hit, effectiveSL trails to entry — resolves at TP2 or trailing SL breach.
+  function isResolved(sig: BacktestSignal, m5All: Candle[], upToIdx: number): boolean {
+    const start = m5All.findIndex((c) => c.epoch >= sig.signalEpoch);
+    if (start < 0) return false;
+    const isBull = sig.trend === "Bullish";
+    let effectiveSL = sig.stopLoss;
+    let tp1Locked = false;
+    for (let j = start + 1; j <= upToIdx; j++) {
+      const c = m5All[j];
+      const tp2Hit = isBull ? c.high >= sig.takeProfit2 : c.low <= sig.takeProfit2;
+      const tp1Hit = isBull ? c.high >= sig.takeProfit1 : c.low <= sig.takeProfit1;
+      const slHit  = isBull ? c.low  <= effectiveSL     : c.high >= effectiveSL;
+      if (tp2Hit) return true;           // TP2 full win — resolved
+      if (!tp1Locked) {
+        if (tp1Hit && !slHit) { tp1Locked = true; effectiveSL = sig.entryPrice; continue; }
+        if (slHit) return true;          // original SL hit — resolved as loss
+        if (tp1Hit && slHit) {
+          const candleDir = c.close > c.open ? "bull" : "bear";
+          if ((isBull && candleDir === "bull") || (!isBull && candleDir === "bear")) {
+            tp1Locked = true; effectiveSL = sig.entryPrice; continue;
+          }
+          return true;                   // SL wins same-bar heuristic — resolved as loss
+        }
+      } else {
+        if (slHit) return true;          // breakeven SL hit — resolved as win_breakeven
+      }
+    }
+    return false;  // still open (TP1 hit but TP2/breakeven not yet resolved)
+  }
+
   // Untuk setiap bar M5 yang kita "tutup" (bar ke-i menjadi closedM5 = [-2])
   // kita butuh: m5Candles[0..i+1] (i+1 adalah bar live/current)
   for (let i = 0; i < m5All.length - 1; i++) {
@@ -363,13 +430,32 @@ async function runBacktest() {
     const m15Slice = m15All.filter((c) => c.epoch <= closedM5.epoch);
     if (m15Slice.length < EMA50_PERIOD) continue;
 
-    const liveTrend = getTrend(m15Slice);
     const swings = findSwings(m15Slice);
+
+    // Task 1: clear active signal state if it has been resolved by this point
+    if (activeBuyId.id !== null) {
+      const existing = signals.find((s) => s.id === activeBuyId.id);
+      if (existing && isResolved(existing, m5All, i)) {
+        activeBuyId.id = null; activeBuyId.anchor = null;
+      }
+    }
+    if (activeSellId.id !== null) {
+      const existing = signals.find((s) => s.id === activeSellId.id);
+      if (existing && isResolved(existing, m5All, i)) {
+        activeSellId.id = null; activeSellId.anchor = null;
+      }
+    }
 
     // Evaluate both directions
     for (const dir of ["Bullish", "Bearish"] as const) {
       const swing = dir === "Bullish" ? swings.bullish : swings.bearish;
       if (!swing) continue;
+
+      const activeTracker = dir === "Bullish" ? activeBuyId : activeSellId;
+
+      // Task 1: cooldown — skip if same anchorEpoch already produced an active signal
+      // or if any signal in this direction is still unresolved
+      if (activeTracker.anchor === swing.anchorEpoch || activeTracker.id !== null) continue;
 
       const fib = calcFib(swing.swingHigh, swing.swingLow, dir);
       const sigId = `${closedM5.epoch}_${dir}`;
@@ -383,6 +469,19 @@ async function runBacktest() {
       const lastM15Close = m15Closes[m15Closes.length - 1];
       if (dir === "Bullish" && lastM15Close <= ema50) continue;
       if (dir === "Bearish" && lastM15Close >= ema50) continue;
+
+      // Task 4: EMA20 M5 micro-trend guard
+      const m5Closes = m5Slice.map((c) => c.close);
+      if (m5Closes.length >= EMA50_PERIOD) {
+        const ema20m5Arr = calcEMA(m5Closes, EMA20_PERIOD);
+        const ema50m5Arr = calcEMA(m5Closes, EMA50_PERIOD);
+        if (ema20m5Arr.length > 0 && ema50m5Arr.length > 0) {
+          const ema20m5 = ema20m5Arr[ema20m5Arr.length - 1];
+          const ema50m5 = ema50m5Arr[ema50m5Arr.length - 1];
+          if (dir === "Bullish" && ema20m5 <= ema50m5) continue;
+          if (dir === "Bearish" && ema20m5 >= ema50m5) continue;
+        }
+      }
 
       const atrM15 = calcATR(m15Slice, ATR_PERIOD);
       if (atrM15 <= 0) continue;
@@ -410,24 +509,36 @@ async function runBacktest() {
       const isEngulfing = checkEngulfing(prevM5, closedM5, dir);
       if (!isRejection && !isEngulfing) continue;
 
-      // Signal valid!
-      seenSignalIds.add(sigId);
-
       const confirmationType = isEngulfing ? "engulfing" : "rejection";
       const sl = dir === "Bullish" ? fib.swingLow : fib.swingHigh;
       const entryPrice = closedM5.close;
       const slDistance = Math.abs(entryPrice - sl);
-      if (slDistance < atrM15 * 0.1) continue;
 
-      // TP calculation
+      // Task 2: minimum SL distance filter — 0.3× ATR M15 and hard 2.0 point floor
+      if (slDistance < atrM15 * 0.3) continue;
+      if (slDistance < 2.0) continue;
+
+      // Task 3: TP2 = Fib 127.2% + 0.5× ATR M15 (more reachable than 161.8%)
       const tp1FibLevel = dir === "Bearish" ? fib.swingLow - range * 0.272 : fib.swingHigh + range * 0.272;
       const tp1AtrLevel = dir === "Bearish" ? entryPrice - atrM15 * 1.0 : entryPrice + atrM15 * 1.0;
       const tp1 = dir === "Bearish" ? Math.max(tp1FibLevel, tp1AtrLevel) : Math.min(tp1FibLevel, tp1AtrLevel);
-      const tp2 = dir === "Bearish" ? fib.swingLow - range * 0.618 : fib.swingHigh + range * 0.618;
+      const tp2 = dir === "Bearish"
+        ? fib.swingLow - range * 0.272 - atrM15 * 0.5
+        : fib.swingHigh + range * 0.272 + atrM15 * 0.5;
       const tp1Dist = Math.abs(tp1 - entryPrice);
       const tp2Dist = Math.abs(tp2 - entryPrice);
       const rr1 = Math.round((tp1Dist / slDistance) * 100) / 100;
       const rr2 = Math.round((tp2Dist / slDistance) * 100) / 100;
+
+      // Task 5: session tag
+      const sessionTag: "active" | "low_confidence" = isActiveSession(closedM5.epoch * 1000) ? "active" : "low_confidence";
+
+      // Signal valid!
+      seenSignalIds.add(sigId);
+
+      // Task 1: register this signal as active for this direction & anchor
+      activeTracker.id = sigId;
+      activeTracker.anchor = swing.anchorEpoch;
 
       // Resolve outcome
       const resolution = evaluateOutcome(
@@ -446,6 +557,8 @@ async function runBacktest() {
         rr2,
         signalEpoch: closedM5.epoch,
         confirmationType,
+        sessionTag,
+        anchorEpoch: swing.anchorEpoch,
         ...resolution,
       };
 
@@ -453,43 +566,50 @@ async function runBacktest() {
 
       const timeStr = new Date(closedM5.epoch * 1000).toISOString().replace("T", " ").slice(0, 19);
       const outcomeIcon =
-        resolution.outcome === "win_tp1" ? "✅ TP1" :
-        resolution.outcome === "win_tp2" ? "🏆 TP2" :
-        resolution.outcome === "loss"    ? "❌ SL " : "⏳ EXP";
+        resolution.outcome === "win_tp2"       ? "🏆 TP2" :
+        resolution.outcome === "win_breakeven" ? "🔒 BEP" :
+        resolution.outcome === "loss"          ? "❌ SL " : "⏳ EXP";
       const dir2 = dir === "Bullish" ? "BUY " : "SELL";
+      const sessFlag = sessionTag === "low_confidence" ? " [⚠ LOW_CONF]" : "";
       console.log(
-        `  ${outcomeIcon} | ${timeStr} | ${dir2} | Entry: ${entryPrice.toFixed(2)} | SL: ${sl.toFixed(2)} | TP1: ${tp1.toFixed(2)} | TP2: ${tp2.toFixed(2)} | RR: 1:${rr1}/1:${rr2} | ${confirmationType.toUpperCase()} | ${resolution.resolutionNote}`
+        `  ${outcomeIcon} | ${timeStr} | ${dir2} | Entry: ${entryPrice.toFixed(2)} | SL: ${sl.toFixed(2)} | TP1: ${tp1.toFixed(2)} | TP2: ${tp2.toFixed(2)} | RR: 1:${rr1}/1:${rr2} | ${confirmationType.toUpperCase()}${sessFlag} | ${resolution.resolutionNote}`
       );
     }
   }
 
   // ─── Summary ──────────────────────────────────────────────────────────────
+  const isWin = (s: BacktestSignal) => s.outcome === "win_tp2" || s.outcome === "win_breakeven";
+
   const total   = signals.length;
-  const winTP1  = signals.filter((s) => s.outcome === "win_tp1").length;
   const winTP2  = signals.filter((s) => s.outcome === "win_tp2").length;
-  const wins    = winTP1 + winTP2;
+  const winBEP  = signals.filter((s) => s.outcome === "win_breakeven").length;
+  const wins    = signals.filter(isWin).length;
   const losses  = signals.filter((s) => s.outcome === "loss").length;
   const expired = signals.filter((s) => s.outcome === "expired").length;
   const resolved = wins + losses;
   const winRate = resolved > 0 ? ((wins / resolved) * 100).toFixed(1) : "N/A";
   const winRateAll = total > 0 ? ((wins / total) * 100).toFixed(1) : "N/A";
 
+  const activeSessionSigs = signals.filter((s) => s.sessionTag === "active");
+  const lowConfSigs       = signals.filter((s) => s.sessionTag === "low_confidence");
+  const activeWins        = activeSessionSigs.filter(isWin).length;
+
   const buySignals  = signals.filter((s) => s.trend === "Bullish");
   const sellSignals = signals.filter((s) => s.trend === "Bearish");
-  const buyWins  = buySignals.filter((s) => s.outcome === "win_tp1" || s.outcome === "win_tp2").length;
-  const sellWins = sellSignals.filter((s) => s.outcome === "win_tp1" || s.outcome === "win_tp2").length;
+  const buyWins  = buySignals.filter(isWin).length;
+  const sellWins = sellSignals.filter(isWin).length;
 
   const rejSignals = signals.filter((s) => s.confirmationType === "rejection");
   const engSignals = signals.filter((s) => s.confirmationType === "engulfing");
-  const rejWins = rejSignals.filter((s) => s.outcome === "win_tp1" || s.outcome === "win_tp2").length;
-  const engWins = engSignals.filter((s) => s.outcome === "win_tp1" || s.outcome === "win_tp2").length;
+  const rejWins = rejSignals.filter(isWin).length;
+  const engWins = engSignals.filter(isWin).length;
 
   console.log("\n═══════════════════════════════════════════════════════════════");
   console.log("  HASIL BACKTEST — XAUUSD — 24 JAM TERAKHIR");
   console.log("═══════════════════════════════════════════════════════════════");
   console.log(`  Total sinyal    : ${total}`);
-  console.log(`  Win (TP1)       : ${winTP1}`);
   console.log(`  Win (TP2)       : ${winTP2}`);
+  console.log(`  Win (Breakeven) : ${winBEP}`);
   console.log(`  Total Win       : ${wins}`);
   console.log(`  Loss (SL)       : ${losses}`);
   console.log(`  Expired (>5jam) : ${expired}`);
@@ -502,6 +622,9 @@ async function runBacktest() {
   console.log("───────────────────────────────────────────────────────────────");
   console.log(`  Pin Bar     : ${rejSignals.length} total, ${rejWins} win (${rejSignals.length > 0 ? ((rejWins / rejSignals.length) * 100).toFixed(1) : "N/A"}%)`);
   console.log(`  Engulfing   : ${engSignals.length} total, ${engWins} win (${engSignals.length > 0 ? ((engWins / engSignals.length) * 100).toFixed(1) : "N/A"}%)`);
+  console.log("───────────────────────────────────────────────────────────────");
+  console.log(`  Active session: ${activeSessionSigs.length} signals, ${activeWins} win (${activeSessionSigs.length > 0 ? ((activeWins / activeSessionSigs.length) * 100).toFixed(1) : "N/A"}%)`);
+  console.log(`  Low confidence: ${lowConfSigs.length} signals (outside London+NY)`);
   console.log("═══════════════════════════════════════════════════════════════\n");
 
   if (total === 0) {

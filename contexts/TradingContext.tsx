@@ -113,6 +113,8 @@ export interface TradingSignal {
   signalCandleEpoch: number;
   confirmationType: ConfirmationType;
   outcome?: "win" | "loss" | "pending";
+  sessionTag?: "active" | "low_confidence";
+  effectiveSL?: number;
 }
 
 export type TrendState = "Bullish" | "Bearish" | "No Trade" | "Loading";

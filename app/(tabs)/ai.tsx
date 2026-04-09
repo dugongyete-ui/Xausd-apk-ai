@@ -502,7 +502,7 @@ export default function AIScreen() {
       content: text,
     };
 
-    // Thinking phase bubble — ditampilkan saat AI memproses
+    // Thinking phase bubble — tampil selama AI berpikir
     const thinkingBubbleId = `think_${Date.now()}`;
     thinkingIdRef.current = thinkingBubbleId;
 
@@ -522,13 +522,10 @@ export default function AIScreen() {
 
     if (!BACKEND_URL) {
       setMessages((prev) => prev.filter((m) => m.id !== thinkingBubbleId));
-      setMessages((prev) =>
-        prev.map((m) =>
-          m.id === msgId
-            ? { ...m, content: "Backend tidak tersambung. Pastikan server berjalan.", streaming: false }
-            : m
-        )
-      );
+      setMessages((prev) => [
+        ...prev,
+        { id: msgId, role: "assistant", content: "Backend tidak tersambung.", streaming: false },
+      ]);
       setIsStreaming(false);
       return;
     }
@@ -542,148 +539,152 @@ export default function AIScreen() {
       setIsStreaming(false);
     };
 
-    const sendWithRetry = async (attempt = 0): Promise<{ requestId?: string } | null> => {
-      try {
-        const res = await fetch(`${BACKEND_URL}/api/ai/chat`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ message: text }),
-        });
-        if (!res.ok) {
-          if (attempt === 0) {
-            await new Promise((r) => setTimeout(r, 2500));
-            return sendWithRetry(1);
-          }
-          const errBody = await res.text().catch(() => "");
-          console.warn("[AI] Error response:", res.status, errBody.slice(0, 100));
-          return null;
-        }
-        const raw = await res.text();
-        try {
-          return JSON.parse(raw) as { requestId?: string };
-        } catch {
-          if (attempt === 0) {
-            console.warn("[AI] Non-JSON response, retrying in 3s...");
-            await new Promise((r) => setTimeout(r, 3000));
-            return sendWithRetry(1);
-          }
-          return null;
-        }
-      } catch (e) {
-        if (attempt === 0) {
-          await new Promise((r) => setTimeout(r, 2500));
-          return sendWithRetry(1);
-        }
-        return null;
-      }
-    };
-
     try {
-      const sendData = await sendWithRetry();
+      const res = await fetch(`${BACKEND_URL}/api/ai/stream`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: text }),
+      });
 
-      if (!sendData) {
-        showError("AI tidak dapat dijangkau. Periksa koneksi atau coba lagi sebentar.");
-        return;
-      }
-
-      const requestId = sendData.requestId;
-
-      if (!requestId) {
-        showError("AI sedang tidak tersedia. Coba lagi sebentar.");
-        return;
-      }
-
-      const startedAt = Date.now();
-      const MAX_WAIT = 90000;
-      let polling = true;
-
-      const doPoll = async () => {
-        if (!polling) return;
-        if (!streamingIdRef.current || streamingIdRef.current !== msgId) {
-          polling = false;
-          return;
-        }
-        if (Date.now() - startedAt > MAX_WAIT) {
-          polling = false;
-          showError("AI memerlukan waktu terlalu lama. Coba lagi sebentar.");
-          return;
-        }
-
+      if (!res.ok) {
+        const errBody = await res.text().catch(() => "");
+        let errMsg = "AI tidak dapat dijangkau. Coba lagi sebentar.";
         try {
-          const pollRes = await fetch(`${BACKEND_URL}/api/ai/messages?limit=20`);
-          if (pollRes.ok) {
-            const data = await pollRes.json() as {
-              messages?: Array<{
-                id: string;
-                role: string;
-                content: string;
-                thinking?: string;
-                type: string;
-                metadata?: { requestId?: string };
-              }>
-            };
-            const msgs = data.messages ?? [];
+          const parsed = JSON.parse(errBody) as { error?: string };
+          if (parsed.error) errMsg = parsed.error;
+        } catch { /* ignore */ }
+        showError(errMsg);
+        return;
+      }
 
-            const matched = msgs.find(
-              (m) =>
-                m.role === "assistant" &&
-                m.type === "user_chat" &&
-                m.metadata?.requestId === requestId
-            );
+      if (!res.body) {
+        showError("Browser tidak mendukung streaming. Coba refresh halaman.");
+        return;
+      }
 
-            if (matched) {
-              polling = false;
-              streamingIdRef.current = null;
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
 
-              const thinking = matched.thinking ?? undefined;
-              const reply = matched.content.trim() || "Maaf, AI tidak dapat merespons saat ini.";
-              const words = reply.match(/\S+\s*/g) ?? [];
-              let i = 0;
-              let built = "";
-              const ms = Math.max(25, Math.min(70, Math.floor(1800 / Math.max(words.length, 1))));
+      let lineBuffer = "";
+      let currentEvent = "";
+      let contentBuilt = "";
+      let thinkingReceived: string | undefined;
+      let responseStarted = false;
 
-              // Ganti thinking bubble dengan pesan AI (dengan thinking panel)
-              setMessages((prev) => {
-                const filtered = prev.filter((m) => m.id !== thinkingBubbleId);
-                return [
-                  ...filtered,
-                  { id: msgId, role: "assistant", content: "", thinking, streaming: true },
-                ];
-              });
-              scrollToBottom();
+      // Parse SSE line-by-line from the stream
+      const processLines = (rawText: string) => {
+        lineBuffer += rawText;
+        const lines = lineBuffer.split("\n");
+        lineBuffer = lines.pop() ?? "";
 
-              const wordTimer = setInterval(() => {
-                if (i < words.length) {
-                  built += words[i];
-                  i++;
-                  const cur = built;
-                  setMessages((prev) =>
-                    prev.map((m) => m.id === msgId ? { ...m, content: cur, streaming: true } : m)
-                  );
+        for (const line of lines) {
+          const trimmed = line.trimEnd();
+
+          if (trimmed.startsWith("event: ")) {
+            currentEvent = trimmed.slice(7).trim();
+          } else if (trimmed.startsWith("data: ")) {
+            const rawData = trimmed.slice(6);
+
+            if (currentEvent === "thinking") {
+              try {
+                const parsed = JSON.parse(rawData) as { thinking?: string };
+                if (parsed.thinking) {
+                  thinkingReceived = parsed.thinking;
+                  // Replace thinking bubble → real message with thinking panel
+                  setMessages((prev) => {
+                    const filtered = prev.filter((m) => m.id !== thinkingBubbleId);
+                    return [
+                      ...filtered,
+                      {
+                        id: msgId,
+                        role: "assistant" as const,
+                        content: "",
+                        thinking: thinkingReceived,
+                        streaming: true,
+                      },
+                    ];
+                  });
+                  responseStarted = true;
                   scrollToBottom();
-                } else {
-                  clearInterval(wordTimer);
-                  setMessages((prev) =>
-                    prev.map((m) => m.id === msgId ? { ...m, streaming: false } : m)
-                  );
-                  setIsStreaming(false);
                 }
-              }, ms);
-              return;
-            }
-          }
-        } catch { /* keep polling on network error */ }
+              } catch { /* ignore */ }
 
-        if (polling) {
-          setTimeout(doPoll, 2000);
+            } else if (currentEvent === "chunk") {
+              try {
+                const parsed = JSON.parse(rawData) as { chunk?: string };
+                if (parsed.chunk) {
+                  contentBuilt += parsed.chunk;
+                  const cur = contentBuilt;
+
+                  if (!responseStarted) {
+                    // No thinking received yet — replace bubble with real message
+                    setMessages((prev) => {
+                      const filtered = prev.filter((m) => m.id !== thinkingBubbleId);
+                      return [
+                        ...filtered,
+                        {
+                          id: msgId,
+                          role: "assistant" as const,
+                          content: cur,
+                          streaming: true,
+                        },
+                      ];
+                    });
+                    responseStarted = true;
+                  } else {
+                    setMessages((prev) =>
+                      prev.map((m) =>
+                        m.id === msgId ? { ...m, content: cur, streaming: true } : m
+                      )
+                    );
+                  }
+                  scrollToBottom();
+                }
+              } catch { /* ignore */ }
+
+            } else if (currentEvent === "done" || rawData === "[DONE]") {
+              streamingIdRef.current = null;
+              setMessages((prev) =>
+                prev.map((m) => (m.id === msgId ? { ...m, streaming: false } : m))
+              );
+              setIsStreaming(false);
+
+            } else if (currentEvent === "error") {
+              try {
+                const parsed = JSON.parse(rawData) as { error?: string };
+                showError(parsed.error ?? "AI error");
+              } catch {
+                showError("AI mengalami error.");
+              }
+            }
+
+            // Reset event name after processing data
+            currentEvent = "";
+          }
+          // Empty line = event separator, already handled by resetting event above
         }
       };
 
-      setTimeout(doPoll, 2000);
+      // Read stream until done
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        processLines(decoder.decode(value, { stream: true }));
+      }
+
+      // Finalize if stream ended without explicit done event
+      if (streamingIdRef.current === msgId) {
+        streamingIdRef.current = null;
+        setMessages((prev) =>
+          prev.map((m) => (m.id === msgId ? { ...m, streaming: false } : m))
+        );
+        setIsStreaming(false);
+      }
     } catch (err: unknown) {
-      const errMsg = err instanceof Error && !err.message.includes("JSON")
-        ? err.message
-        : "Koneksi ke server gagal. Coba lagi dalam beberapa detik.";
+      const errMsg =
+        err instanceof Error
+          ? err.message
+          : "Koneksi ke server gagal. Coba lagi dalam beberapa detik.";
       showError(errMsg);
     }
   }, [input, isStreaming, scrollToBottom]);

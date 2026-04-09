@@ -216,15 +216,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
       snapshot,
       (chunk: string) => {
         if (!streamDone) {
-          res.write(`data: ${JSON.stringify({ chunk })}\n\n`);
+          res.write(`event: chunk\ndata: ${JSON.stringify({ chunk })}\n\n`);
           flush();
         }
       },
-      (_fullResponse: string) => {
+      (_fullResponse: string, _thinking?: string) => {
         if (!streamDone) {
           streamDone = true;
           clearHeartbeat();
-          res.write(`data: [DONE]\n\n`);
+          res.write(`event: done\ndata: [DONE]\n\n`);
           flush();
           res.end();
         }
@@ -234,9 +234,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
         if (!streamDone) {
           streamDone = true;
           clearHeartbeat();
-          res.write(`data: ${JSON.stringify({ error: err })}\n\n`);
+          res.write(`event: error\ndata: ${JSON.stringify({ error: err })}\n\n`);
           flush();
           res.end();
+        }
+      },
+      (thinking: string) => {
+        if (!streamDone) {
+          res.write(`event: thinking\ndata: ${JSON.stringify({ thinking })}\n\n`);
+          flush();
         }
       }
     );

@@ -1,4 +1,5 @@
 import { CohereClientV2 } from "cohere-ai";
+import https from "https";
 import type { TradingSignal, MarketStateSnapshot } from "./derivService";
 import { toWIBString } from "../shared/utils";
 
@@ -230,7 +231,83 @@ async function callCohereAI(
   }
 }
 
-// ─── Server-side word streaming (simulate streaming from full response) ──────────
+// ─── Real HTTP Streaming to Cohere ───────────────────────────────────────────
+/**
+ * Streams tokens from Cohere v2 Chat API in real-time.
+ * Calls onChunk for every text token as it arrives.
+ * Resolves with the complete raw response text.
+ */
+function streamCohereHTTP(
+  messages: Array<{ role: string; content: string }>,
+  onChunk: (text: string) => void
+): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const body = JSON.stringify({
+      model: "command-a-03-2025",
+      stream: true,
+      messages: [
+        { role: "system", content: SYSTEM_PROMPT },
+        ...messages.map((m) => ({ role: m.role, content: m.content })),
+      ],
+    });
+
+    const req = https.request(
+      {
+        hostname: "api.cohere.com",
+        path: "/v2/chat",
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${process.env.COHERE_API_KEY ?? ""}`,
+          "Content-Type": "application/json",
+          "Content-Length": Buffer.byteLength(body),
+        },
+      },
+      (res) => {
+        let fullText = "";
+        let lineBuffer = "";
+
+        res.on("data", (chunk: Buffer) => {
+          lineBuffer += chunk.toString();
+          const lines = lineBuffer.split("\n");
+          lineBuffer = lines.pop() ?? "";
+
+          for (const line of lines) {
+            if (!line.startsWith("data: ")) continue;
+            const raw = line.slice(6).trim();
+            if (raw === "[DONE]") continue;
+            try {
+              const parsed = JSON.parse(raw) as {
+                type?: string;
+                delta?: { message?: { content?: { text?: string } } };
+              };
+              if (parsed.type === "content-delta") {
+                const text = parsed.delta?.message?.content?.text ?? "";
+                if (text) {
+                  fullText += text;
+                  onChunk(text);
+                }
+              }
+            } catch {
+              // ignore parse errors on non-JSON lines
+            }
+          }
+        });
+
+        res.on("end", () => resolve(fullText));
+        res.on("error", reject);
+      }
+    );
+
+    req.on("error", reject);
+    req.setTimeout(60000, () => {
+      req.destroy(new Error("Cohere stream timeout (60s)"));
+    });
+    req.write(body);
+    req.end();
+  });
+}
+
+// ─── Server-side word streaming (simulate streaming — kept for fallback) ─────
 function streamWordByWord(
   text: string,
   onChunk: (chunk: string) => void,
@@ -771,13 +848,14 @@ class AIService {
     return clean;
   }
 
-  // ─── User Chat Streaming ───────────────────────────────────────────────────
+  // ─── User Chat Streaming (real-time from Cohere) ──────────────────────────
   chatStream(
     userMessage: string,
     snapshot: MarketStateSnapshot,
     onChunk: (chunk: string) => void,
     onDone: (fullResponse: string, thinking?: string) => void,
-    onError: (err: string) => void
+    onError: (err: string) => void,
+    onThinking?: (thinking: string) => void
   ): void {
     const marketCtx = buildMarketContext(snapshot);
     const messages: Array<{ role: string; content: string }> = [];
@@ -806,20 +884,99 @@ class AIService {
       messages.push({ role: "user", content: userMessage });
     }
 
-    callCohereAI(messages).then((fullResponse) => {
-      const { thinking, response: parsed } = parseThinking(fullResponse ?? "");
-      const clean = parsed.trim() || "Maaf, AI tidak dapat merespons saat ini.";
-      const cleanThinking = thinking ? stripMarkdown(thinking) : undefined;
+    // Thinking state machine:
+    // Phase 1 — accumulate into thinkingBuf until </thinking> is found
+    // Phase 2 — stream response tokens directly via onChunk
+    let thinkingBuf = "";
+    let responseBuf = "";
+    let phase: "thinking" | "response" = "thinking";
+    let thinkingEmitted = false;
 
-      this.addToHistory("user", userMessage);
-      this.addToHistory("assistant", clean);
-      this.addDisplayMessage({ role: "user", content: userMessage, type: "user_chat" });
-      this.addDisplayMessage({ role: "assistant", content: clean, type: "user_chat", thinking: cleanThinking });
+    const handleToken = (token: string) => {
+      if (phase === "thinking") {
+        thinkingBuf += token;
 
-      streamWordByWord(clean, onChunk, () => onDone(clean, cleanThinking));
-    }).catch((err: Error) => {
-      onError(err.message || "AI error");
-    });
+        // Safety valve: if model doesn't use thinking tags, switch to response mode
+        if (
+          thinkingBuf.length > 10 &&
+          !thinkingBuf.startsWith("<") &&
+          !thinkingBuf.startsWith("<t")
+        ) {
+          phase = "response";
+          responseBuf += thinkingBuf;
+          onChunk(thinkingBuf);
+          thinkingBuf = "";
+          return;
+        }
+
+        const closeIdx = thinkingBuf.indexOf("</thinking>");
+        if (closeIdx !== -1) {
+          const openIdx = thinkingBuf.indexOf("<thinking>");
+          const raw =
+            openIdx === 0
+              ? thinkingBuf.slice(10, closeIdx).trim()
+              : thinkingBuf.slice(0, closeIdx).trim();
+
+          const cleanThinkingContent = stripMarkdown(raw);
+          if (cleanThinkingContent && !thinkingEmitted) {
+            thinkingEmitted = true;
+            wrappedOnThinking(cleanThinkingContent);
+          }
+
+          // Any text after </thinking> on the same chunk goes to response
+          const rest = thinkingBuf.slice(closeIdx + 11).trimStart();
+          thinkingBuf = "";
+          phase = "response";
+
+          if (rest) {
+            responseBuf += rest;
+            onChunk(rest);
+          }
+        }
+      } else {
+        // Strip leading whitespace/newlines from the very first response token
+        const effective = responseBuf.length === 0 ? token.replace(/^\s+/, "") : token;
+        if (effective) {
+          responseBuf += effective;
+          onChunk(effective);
+        }
+      }
+    };
+
+    // Capture thinking text so we can pass it to onDone / store in displayMessage
+    let capturedThinking: string | undefined;
+    const originalOnThinking = onThinking;
+    const wrappedOnThinking = (t: string) => {
+      capturedThinking = t;
+      if (originalOnThinking) originalOnThinking(t);
+    };
+
+    streamCohereHTTP(messages, handleToken)
+      .then(() => {
+        // If thinking was never closed, treat everything as response
+        if (phase === "thinking" && thinkingBuf) {
+          responseBuf = thinkingBuf;
+        }
+
+        const clean =
+          stripMarkdown(responseBuf.trim()) ||
+          "Maaf, AI tidak dapat merespons saat ini.";
+
+        this.addToHistory("user", userMessage);
+        this.addToHistory("assistant", clean);
+        this.addDisplayMessage({ role: "user", content: userMessage, type: "user_chat" });
+        this.addDisplayMessage({
+          role: "assistant",
+          content: clean,
+          type: "user_chat",
+          ...(capturedThinking ? { thinking: capturedThinking } : {}),
+        });
+
+        onDone(clean, capturedThinking);
+      })
+      .catch((err: Error) => {
+        onError((err as Error).message || "AI streaming error");
+      });
   }
 
   getMessages(limit = 20): AIMessage[] {

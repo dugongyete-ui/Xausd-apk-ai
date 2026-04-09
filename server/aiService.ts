@@ -163,7 +163,7 @@ async function callCohereAI(
       setTimeout(() => reject(new Error("Cohere timeout (20s)")), 20000)
     );
     const responsePromise = cohereClient.chat({
-      model: "command-r-plus",
+      model: "command-a-03-2025",
       messages: [
         { role: "system", content: SYSTEM_PROMPT },
         ...cohereMessages,

@@ -1015,8 +1015,11 @@ class DerivService {
     const atrM15 = calcATR(this.m15Candles, ATR_PERIOD);
     if (atrM15 <= 0) return null;
 
-    // Zona entry diperluas: 50%–88.6% dari swing range
+    // Minimum Fibonacci range: swing harus setidaknya 1× ATR M15
+    // agar entry zone dan TP memiliki ruang yang cukup
     const range = Math.abs(fib.swingHigh - fib.swingLow);
+    if (range < atrM15 * 1.0) return null;
+
     let lo: number, hi: number;
     if (trend === "Bearish") {
       lo = fib.swingLow + range * 0.50;
@@ -1055,15 +1058,22 @@ class DerivService {
 
     const sl = trend === "Bullish" ? fib.swingLow : fib.swingHigh;
 
-    // Masalah 6b: Engulfing WAJIB ada confluence round number (25 atau 50)
-    // Pin Bar Rejection tidak memerlukan confluence wajib
+    // Engulfing WAJIB ada confluence: near round number (.25/.50) ATAU near swing point M5
+    // Cek menggunakan harga entry (close candle M5) sebagai referensi, bukan midpoint entry/SL
     if (isEngulfing && !isRejection) {
-      const zoneCenter = (closedM5.close + sl) / 2;
-      const nearRound = [25, 50].some((step) => {
-        const nearest = Math.round(zoneCenter / step) * step;
-        return Math.abs(zoneCenter - nearest) <= 3;
+      const entryRef = closedM5.close;
+      const nearRoundForEngulf = [25, 50].some((step) => {
+        const nearest = Math.round(entryRef / step) * step;
+        return Math.abs(entryRef - nearest) <= 2;
       });
-      if (!nearRound) return null;
+      // Juga cek swing point M5 terdekat dalam 10 candle terakhir
+      const recentM5 = this.m5Candles.slice(-12, -2);
+      const recentHighs = recentM5.map((c) => c.high);
+      const recentLows  = recentM5.map((c) => c.low);
+      const nearSwingM5 = [...recentHighs, ...recentLows].some(
+        (p) => Math.abs(p - entryRef) <= 3
+      );
+      if (!nearRoundForEngulf && !nearSwingM5) return null;
     }
 
     const confirmationType = isEngulfing ? "engulfing" : "rejection";

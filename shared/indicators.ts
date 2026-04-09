@@ -87,8 +87,9 @@ export function calcFib(swingHigh: number, swingLow: number, trend: "Bullish" | 
 }
 
 // ─── Swing Detection ──────────────────────────────────────────────────────────
-// Masalah 1b: span diperlonggar 3-40 (dari 3-25)
-// Masalah 1c: minimum range menggunakan ATR-relative (0.3 × ATR M15)
+// Menggunakan 5-bar fractal (2 candle kiri-kanan) untuk swing yang lebih solid.
+// Span impulse: 3-40 candle. Range minimum: 0.3 × ATR M15.
+// Retracement check: tracking running high/low untuk deteksi koreksi dalam impulse.
 export function findSwings(
   candles: Candle[],
   atrM15 = 0
@@ -98,11 +99,23 @@ export function findSwings(
   const n = slice.length;
   if (n < 12) return { bullish: null, bearish: null };
 
+  // 5-bar fractal: candle ke-i adalah swing high jika high-nya lebih tinggi
+  // dari 2 candle di kiri DAN 2 candle di kanan.
   const swingHighs: number[] = [];
   const swingLows: number[] = [];
-  for (let i = 1; i < n - 1; i++) {
-    if (slice[i].high > slice[i - 1].high && slice[i].high > slice[i + 1].high) swingHighs.push(i);
-    if (slice[i].low  < slice[i - 1].low  && slice[i].low  < slice[i + 1].low)  swingLows.push(i);
+  for (let i = 2; i < n - 2; i++) {
+    const isSwingHigh =
+      slice[i].high > slice[i - 1].high &&
+      slice[i].high > slice[i - 2].high &&
+      slice[i].high > slice[i + 1].high &&
+      slice[i].high > slice[i + 2].high;
+    const isSwingLow =
+      slice[i].low < slice[i - 1].low &&
+      slice[i].low < slice[i - 2].low &&
+      slice[i].low < slice[i + 1].low &&
+      slice[i].low < slice[i + 2].low;
+    if (isSwingHigh) swingHighs.push(i);
+    if (isSwingLow)  swingLows.push(i);
   }
 
   function isCleanImpulse(
@@ -116,11 +129,21 @@ export function findSwings(
     const minRange = atrM15 > 0 ? atrM15 * 0.3 : 5;
     if (range < minRange) return false;
 
+    // Retracement check yang benar:
+    // BUY: track running high — jika ada candle yang retraced >30% dari high tertinggi saat itu, tolak
+    // SELL: track running low — jika ada candle yang rebound >30% dari low terendah saat itu, tolak
+    let runningExtreme = fromPrice;
     for (let j = fromIdx; j <= toIdx; j++) {
-      if (dir === "up"   && slice[j].low  < fromPrice - range * 0.30) return false;
-      if (dir === "down" && slice[j].high > fromPrice + range * 0.30) return false;
+      if (dir === "up") {
+        runningExtreme = Math.max(runningExtreme, slice[j].high);
+        if (slice[j].low < runningExtreme - range * 0.30) return false;
+      } else {
+        runningExtreme = Math.min(runningExtreme, slice[j].low);
+        if (slice[j].high > runningExtreme + range * 0.30) return false;
+      }
     }
 
+    // Trending check: rata-rata close separuh kedua harus lebih tinggi/rendah dari separuh pertama
     const mid = fromIdx + Math.floor(span / 2);
     let sumA = 0, cntA = 0, sumB = 0, cntB = 0;
     for (let j = fromIdx; j <= toIdx; j++) {

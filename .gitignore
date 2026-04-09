@@ -40,3 +40,5 @@ yarn-error.*
 
 .env
 data/signals.json
+data/*.db-shm
+data/*.db-wal

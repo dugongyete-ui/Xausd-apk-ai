@@ -461,6 +461,8 @@ class AIService {
       });
 
       console.log(`[AIService] Signal recommendation done (${clean.length} chars)`);
+    } catch (e) {
+      console.error("[AIService] Error generating signal recommendation:", (e as Error).message);
     } finally {
       this.isGenerating = false;
     }

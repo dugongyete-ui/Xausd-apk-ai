@@ -157,6 +157,8 @@ const M5_COUNT = 100;
 const EMA20_PERIOD = 20;
 const EMA50_PERIOD = 50;
 const ATR_PERIOD = 14;
+// M5 ATR minimum sebagai rasio dari M15 ATR (dinamis, bukan nilai statis)
+const M5_ATR_MIN_RATIO = 0.5;
 
 // ─── Analysis Helpers (mirrors TradingContext logic) ──────────────────────────
 function calcEMA(closes: number[], period: number): number[] {
@@ -337,7 +339,6 @@ function calcFib(swingHigh: number, swingLow: number, trend: "Bullish" | "Bearis
 // ③ Wick menyentuh/masuk zona DIPERLUAS (50%–88.6%)
 // Body center check DIHAPUS — terlalu ketat
 // Hanya candle CLOSED yang dievaluasi (dijamin dari caller)
-const M5_ATR_MIN = 0.3; // Turun dari 1.0 → lebih permisif
 
 function checkRejection(candle: Candle, trend: "Bullish" | "Bearish", fib: FibLevels): boolean {
   const body = Math.abs(candle.close - candle.open);
@@ -449,12 +450,20 @@ class DerivService {
 
   // fibTrend = arah sinyal aktif terakhir (untuk snapshot/display)
   private fibTrend: "Bullish" | "Bearish" | null = null;
-  private currentSignal: TradingSignal | null = null;
   private signalHistory: TradingSignal[] = (() => {
     const s = loadSignals();
     return s;
   })();
   private savedSignalKeys: Set<string> = new Set(this.signalHistory.map((s) => s.id));
+  // Inisialisasi currentSignal dari sinyal pending terbaru di signalHistory saat startup.
+  // Menggunakan referensi dari signalHistory (sama objek) agar tidak stale.
+  private currentSignal: TradingSignal | null = (() => {
+    const pending = this.signalHistory.filter((s) => s.outcome === "pending");
+    if (pending.length === 0) return null;
+    return pending.sort(
+      (a, b) => new Date(b.timestampUTC).getTime() - new Date(a.timestampUTC).getTime()
+    )[0];
+  })();
 
   private derivMarketClosed = false;
 
@@ -744,17 +753,41 @@ class DerivService {
   // ─── DETEKSI SINYAL PER ARAH ──────────────────────────────────────────────
   // Memeriksa satu arah (Bullish/Bearish) secara mandiri.
   // Return TradingSignal jika valid, null jika tidak.
+  //
+  // TAHAP 1 — Guard M15: Konfirmasi trend M15 wajib terpenuhi terlebih dahulu.
+  //   BUY  hanya valid jika harga M15 > EMA50 M15 (trend Bullish).
+  //   SELL hanya valid jika harga M15 < EMA50 M15 (trend Bearish).
+  // TAHAP 2 — Konfirmasi M5: Zone check + candlestick pattern pada candle CLOSED.
+  //   Tidak ada live price yang digunakan sebagai pemicu sinyal (anti-repaint).
   private detectSignalForDirection(trend: "Bullish" | "Bearish"): TradingSignal | null {
     const fib           = trend === "Bullish" ? this.bullFibLevels : this.bearFibLevels;
     const anchorEpoch   = trend === "Bullish" ? this.lastBullSwing?.anchorEpoch : this.lastBearSwing?.anchorEpoch;
     const lastSigEpoch  = trend === "Bullish" ? this.lastBullSignaledEpoch : this.lastBearSignaledEpoch;
 
-    if (!fib || !anchorEpoch || this.m5Candles.length < 3 || this.currentPrice === null) {
+    if (!fib || !anchorEpoch || this.m5Candles.length < 3) {
       return null;
     }
 
-    const atr = calcATR(this.m15Candles, ATR_PERIOD);
-    if (atr <= 0) return null;
+    // ── TAHAP 1: Guard M15 — EMA50 structure confirmation ─────────────────
+    // BUY wajib: harga M15 > EMA50. SELL wajib: harga M15 < EMA50.
+    // Jika M15 tidak mendukung arah, sinyal TIDAK diproses sama sekali.
+    if (this.m15Candles.length >= EMA50_PERIOD) {
+      const m15Closes = this.m15Candles.map((c) => c.close);
+      const ema50Arr = calcEMA(m15Closes, EMA50_PERIOD);
+      if (ema50Arr.length > 0) {
+        const ema50 = ema50Arr[ema50Arr.length - 1];
+        const lastM15Close = m15Closes[m15Closes.length - 1];
+        if (trend === "Bullish" && lastM15Close <= ema50) {
+          return null;
+        }
+        if (trend === "Bearish" && lastM15Close >= ema50) {
+          return null;
+        }
+      }
+    }
+
+    const atrM15 = calcATR(this.m15Candles, ATR_PERIOD);
+    if (atrM15 <= 0) return null;
 
     // Zona entry diperluas: 50%–88.6% dari swing range
     const range = Math.abs(fib.swingHigh - fib.swingLow);
@@ -767,19 +800,20 @@ class DerivService {
       hi = fib.swingHigh - range * 0.50;
     }
 
-    // Candle closed: gunakan n-2 (paling baru yang sudah close), n-3 (sebelumnya)
+    // ── TAHAP 2: Konfirmasi M5 — gunakan HANYA candle CLOSED (anti-repaint) ──
+    // Candle closed: n-2 (paling baru yang sudah tutup), n-3 (sebelumnya)
     const closedM5 = this.m5Candles[this.m5Candles.length - 2];
     const prevM5   = this.m5Candles[this.m5Candles.length - 3];
 
-    // Zone check: candle closed atau harga live harus menyentuh zona 50%–88.6%
+    // Zone check: HANYA candle closed yang boleh menyentuh zona — TIDAK ada live price
     const candleTouchesZone = trend === "Bearish"
-      ? closedM5.high >= lo || (this.currentPrice >= lo && this.currentPrice <= hi)
-      : closedM5.low <= hi  || (this.currentPrice >= lo && this.currentPrice <= hi);
+      ? closedM5.high >= lo
+      : closedM5.low <= hi;
     if (!candleTouchesZone) return null;
 
-    // Volatility filter M5
+    // Volatility filter M5 — dinamis: M5 ATR harus ≥ M5_ATR_MIN_RATIO × M15 ATR
     const m5ATR = calcATR(this.m5Candles.slice(0, -1), ATR_PERIOD);
-    if (m5ATR < M5_ATR_MIN) return null;
+    if (m5ATR < atrM15 * M5_ATR_MIN_RATIO) return null;
 
     // Konfirmasi candlestick: Pin Bar Rejection atau Engulfing
     const isRejection = checkRejection(closedM5, trend, fib);
@@ -791,29 +825,37 @@ class DerivService {
 
     // Dedup: satu sinyal per candle M5 closed per arah
     if (lastSigEpoch === closedM5.epoch) {
-      // Return the already-saved signal with original fixed prices
       const sigId = `${closedM5.epoch}_${trend}`;
       const existing = this.signalHistory.find((s) => s.id === sigId);
       return existing ?? null;
     }
 
     // Gunakan harga penutupan candle M5 (bukan harga live) sebagai entry
-    // supaya level Entry/TP/SL tidak bergerak setiap tick
     const entryPrice = closedM5.close;
     const slDistance = Math.abs(entryPrice - sl);
-    if (slDistance < atr * 0.1) return null;
+    if (slDistance < atrM15 * 0.1) return null;
 
-    // TP1 scalping: 1:1 RR, cap 15 poin
-    const tp1Dist = Math.min(slDistance * 1.0, 15);
+    // ── TP1: Fibonacci 127.2% extension dari swing impulse (struktur-anchored) ──
+    // Level 127.2% = swingHigh + range × 0.272 (Bullish) / swingLow - range × 0.272 (Bearish)
+    // Atau 1.0× ATR M15 dari entry jika lebih konservatif
+    const tp1FibLevel = trend === "Bearish"
+      ? fib.swingLow - range * 0.272   // 127.2% ext: bearish impuls turun
+      : fib.swingHigh + range * 0.272; // 127.2% ext: bullish impuls naik
+    const tp1AtrLevel = trend === "Bearish"
+      ? entryPrice - atrM15 * 1.0
+      : entryPrice + atrM15 * 1.0;
+    // Ambil target yang lebih konservatif (lebih dekat ke entry)
     const tp1 = trend === "Bearish"
-      ? entryPrice - tp1Dist
-      : entryPrice + tp1Dist;
+      ? Math.max(tp1FibLevel, tp1AtrLevel) // lebih besar = lebih dekat untuk SELL
+      : Math.min(tp1FibLevel, tp1AtrLevel); // lebih kecil = lebih dekat untuk BUY
+    const tp1Dist = Math.abs(tp1 - entryPrice);
 
-    // TP2 full target: 1.8:1 RR, cap 28 poin
-    const tp2Dist = Math.min(Math.max(slDistance * 1.8, 10), 28);
+    // ── TP2: Fibonacci 161.8% extension dari swing impulse (struktur-anchored) ──
+    // Level 161.8% = swingHigh + range × 0.618 (Bullish) / swingLow - range × 0.618 (Bearish)
     const tp2 = trend === "Bearish"
-      ? entryPrice - tp2Dist
-      : entryPrice + tp2Dist;
+      ? fib.swingLow - range * 0.618   // 161.8% ext: bearish impuls turun
+      : fib.swingHigh + range * 0.618; // 161.8% ext: bullish impuls naik
+    const tp2Dist = Math.abs(tp2 - entryPrice);
 
     const rr1 = Math.round((tp1Dist / slDistance) * 100) / 100;
     const rr2 = Math.round((tp2Dist / slDistance) * 100) / 100;
@@ -996,6 +1038,15 @@ class DerivService {
 
   getSignalHistory(): TradingSignal[] {
     return this.signalHistory;
+  }
+
+  // Kembalikan sinyal pending terbaru dari history (untuk fallback restart)
+  getLatestPendingSignal(): TradingSignal | null {
+    const pending = this.signalHistory.filter((s) => s.outcome === "pending");
+    if (pending.length === 0) return null;
+    return pending.sort(
+      (a, b) => new Date(b.timestampUTC).getTime() - new Date(a.timestampUTC).getTime()
+    )[0];
   }
 
   clearSignalHistory(): void {

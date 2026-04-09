@@ -173,7 +173,6 @@ const M5_GRAN = 300;
 const M5_COUNT = 100;
 
 const ATR_PERIOD = 14;
-const M5_ATR_MIN = 0.3;
 const EMA20_PERIOD = 20;
 const EMA50_PERIOD = 50;
 const STORAGE_KEY_SIGNALS = "fibo_signals_v2";
@@ -527,15 +526,15 @@ export function TradingProvider({ children }: { children: ReactNode }) {
         } catch {}
       }
 
-      // Sinyal dari cache — hanya load sinyal yang sudah resolved (win/loss)
-      // Sinyal pending tidak di-restore saat startup — hilang jika belum kena TP/SL
+      // Sinyal dari cache — load semua termasuk pending
+      // Sinyal pending akan dilanjutkan monitoring oleh server, client hanya membaca hasilnya
       if (sigRaw) {
         try {
           const allCached = JSON.parse(sigRaw) as TradingSignal[];
-          const cached = allCached.filter((s) => s.outcome === "win" || s.outcome === "loss");
-          setSignalHistory(cached);
-          cached.forEach((s) => savedSignalKeys.current.add(s.id));
-          console.log(`[TradingContext] Loaded ${cached.length} resolved signals from cache (${allCached.length - cached.length} pending discarded)`);
+          setSignalHistory(allCached);
+          allCached.forEach((s) => savedSignalKeys.current.add(s.id));
+          const pendingCount = allCached.filter((s) => !s.outcome || s.outcome === "pending").length;
+          console.log(`[TradingContext] Loaded ${allCached.length} signals from cache (${pendingCount} pending akan dilanjutkan server)`);
         } catch {}
       }
 
@@ -569,7 +568,15 @@ export function TradingProvider({ children }: { children: ReactNode }) {
           // Merge sinyal server dengan cache lokal — server selalu lebih otoritatif
           setSignalHistory((prev) => {
             if (serverSignals.length === 0) {
-              // Server kosong — mungkin sudah di-clear, tetap kosongkan lokal juga
+              // Server kosong — hanya clear lokal jika lokal juga memang sudah kosong,
+              // atau jika sebelumnya server punya sinyal (savedSignalKeys tidak kosong).
+              // Ini melindungi cache lokal dari clear saat server sementara kosong (restart).
+              if (prev.length === 0) return prev;
+              if (savedSignalKeys.current.size === 0) {
+                // Belum pernah sync — mungkin server baru atau fresh start
+                return prev;
+              }
+              // Server sebelumnya punya data tapi sekarang kosong = intentional clear
               savedSignalKeys.current.clear();
               AsyncStorage.setItem(STORAGE_KEY_SIGNALS, JSON.stringify([])).catch(() => {});
               return [];
@@ -578,12 +585,11 @@ export function TradingProvider({ children }: { children: ReactNode }) {
             const serverIds = new Set(serverSignals.map((s) => s.id));
             const newFromServer = serverSignals.filter((s) => !savedSignalKeys.current.has(s.id));
 
-            // Gabungkan: server otoritatif untuk shared IDs,
-            // tapi pertahankan sinyal lokal yang sudah resolved tapi belum di server
-            const localOnlyResolved = prev.filter(
-              (s) => !serverIds.has(s.id) && (s.outcome === "win" || s.outcome === "loss")
-            );
-            const merged = [...serverSignals, ...localOnlyResolved];
+            // Server otoritatif untuk semua sinyal yang ada di server.
+            // Pertahankan sinyal lokal (termasuk pending) yang BELUM ada di server
+            // — bisa terjadi jika server baru restart dan belum punya data lokal.
+            const localOnly = prev.filter((s) => !serverIds.has(s.id));
+            const merged = [...serverSignals, ...localOnly];
             merged.sort((a, b) =>
               new Date(b.timestampUTC).getTime() - new Date(a.timestampUTC).getTime()
             );
@@ -598,15 +604,24 @@ export function TradingProvider({ children }: { children: ReactNode }) {
               console.log(`[TradingContext] ${newFromServer.length} sinyal baru dari server (total: ${merged.length})`);
             }
 
-            // Jika activeSignal di-client sudah resolved di server, hapus activeSignal
+            // Jika activeSignal di-client sudah resolved di server, hapus activeSignal.
+            // Jika tidak ada activeSignal, coba restore dari sinyal pending terbaru di merged.
             setActiveSignal((prev) => {
-              if (!prev) return null;
-              const serverVersion = merged.find((s) => s.id === prev.id);
-              if (serverVersion && (serverVersion.outcome === "win" || serverVersion.outcome === "loss")) {
-                console.log(`[TradingContext] ActiveSignal cleared — server says ${serverVersion.outcome}: ${prev.id}`);
-                return null;
+              if (prev) {
+                const serverVersion = merged.find((s) => s.id === prev.id);
+                if (serverVersion && (serverVersion.outcome === "win" || serverVersion.outcome === "loss")) {
+                  console.log(`[TradingContext] ActiveSignal cleared — server says ${serverVersion.outcome}: ${prev.id}`);
+                  return null;
+                }
+                return prev;
               }
-              return prev;
+              // Restore activeSignal dari pending terbaru jika tidak ada yang aktif
+              const latestPending = merged.find((s) => s.outcome === "pending");
+              if (latestPending && !resolvedSignalKeysRef.current.has(latestPending.id)) {
+                console.log(`[TradingContext] Startup: restore activeSignal dari pending ${latestPending.id}`);
+                return latestPending;
+              }
+              return null;
             });
 
             return merged;
@@ -650,10 +665,13 @@ export function TradingProvider({ children }: { children: ReactNode }) {
         .then((serverSignals: TradingSignal[]) => {
           if (!Array.isArray(serverSignals)) return;
 
-          // Kalau server kosong, clear lokal juga (sinkron setelah clear dari device lain)
+          // Kalau server kosong: hanya clear lokal jika kita sudah pernah sync sebelumnya
+          // (savedSignalKeys tidak kosong). Melindungi dari clear saat server restart sementara.
           if (serverSignals.length === 0) {
             setSignalHistory((prev) => {
               if (prev.length === 0) return prev;
+              if (savedSignalKeys.current.size === 0) return prev; // Belum pernah sync, jangan clear
+              // Server sebelumnya punya data tapi sekarang kosong = intentional clear
               savedSignalKeys.current.clear();
               AsyncStorage.setItem(STORAGE_KEY_SIGNALS, JSON.stringify([])).catch(() => {});
               return [];
@@ -668,11 +686,9 @@ export function TradingProvider({ children }: { children: ReactNode }) {
           setSignalHistory((prev) => {
             const serverIds = new Set(serverSignals.map((s) => s.id));
             const newOnes = serverSignals.filter((s) => !savedSignalKeys.current.has(s.id));
-            // Pertahankan sinyal lokal yang sudah resolved tapi belum di server
-            const localOnlyResolved = prev.filter(
-              (s) => !serverIds.has(s.id) && (s.outcome === "win" || s.outcome === "loss")
-            );
-            const merged = [...serverSignals, ...localOnlyResolved].sort(
+            // Pertahankan semua sinyal lokal (termasuk pending) yang BELUM ada di server
+            const localOnly = prev.filter((s) => !serverIds.has(s.id));
+            const merged = [...serverSignals, ...localOnly].sort(
               (a, b) => new Date(b.timestampUTC).getTime() - new Date(a.timestampUTC).getTime()
             );
             merged.forEach((s) => savedSignalKeys.current.add(s.id));
@@ -699,28 +715,46 @@ export function TradingProvider({ children }: { children: ReactNode }) {
         .catch(() => {});
     };
 
-    const syncTimer = setInterval(fetchAndMergeSignals, 3 * 60 * 1000);
+    const syncTimer = setInterval(fetchAndMergeSignals, 15 * 1000);
 
     // ── Periodic check: restore active pending signal from backend ────────────
+    // Server adalah satu-satunya yang memantau TP/SL — client hanya polling hasilnya
     const fetchCurrentSignal = () => {
       if (!BACKEND_URL) return;
       fetch(`${BACKEND_URL}/api/current-signal`)
         .then((r) => r.json())
         .then((data: { signal: TradingSignal | null }) => {
-          if (data.signal && data.signal.outcome === "pending") {
+          if (data.signal) {
+            if (data.signal.outcome === "win" || data.signal.outcome === "loss") {
+              // Update activeSignal ke resolved state terlebih dahulu —
+              // ini memicu useEffect notifikasi TP/SL di bawah
+              setActiveSignal((prev) => {
+                if (!prev) return null;
+                if (prev.id !== data.signal!.id) return prev;
+                if (prev.outcome === "win" || prev.outcome === "loss") return prev;
+                console.log(`[TradingContext] Server resolved signal ${data.signal!.id}: ${data.signal!.outcome}`);
+                // Return resolved signal agar notifikasi ter-trigger
+                return { ...prev, outcome: data.signal!.outcome };
+              });
+            } else if (data.signal.outcome === "pending") {
+              setActiveSignal((prev) => {
+                if (prev && prev.outcome === "pending") return prev;
+                if (resolvedSignalKeysRef.current.has(data.signal!.id)) return prev;
+                console.log(`[TradingContext] Periodic sync: restored pending signal ${data.signal!.id}`);
+                savedSignalKeys.current.add(data.signal!.id);
+                return data.signal!;
+              });
+            }
+          } else {
             setActiveSignal((prev) => {
-              // Only restore if no active signal is being tracked locally
-              if (prev && prev.outcome === "pending") return prev;
-              if (resolvedSignalKeysRef.current.has(data.signal!.id)) return prev;
-              console.log(`[TradingContext] Periodic sync: restored pending signal ${data.signal!.id}`);
-              savedSignalKeys.current.add(data.signal!.id);
-              return data.signal!;
+              if (prev && (prev.outcome === "win" || prev.outcome === "loss")) return null;
+              return prev;
             });
           }
         })
         .catch(() => {});
     };
-    const signalSyncTimer = setInterval(fetchCurrentSignal, 20 * 1000);
+    const signalSyncTimer = setInterval(fetchCurrentSignal, 15 * 1000);
 
     return () => {
       clearInterval(syncTimer);
@@ -1139,8 +1173,9 @@ export function TradingProvider({ children }: { children: ReactNode }) {
     const prevM5   = m5Candles[m5Candles.length - 3];
     const atrVal   = atr!;
 
+    // Volatility filter M5 — dinamis: M5 ATR harus ≥ 0.5 × M15 ATR
     const m5ATR = calcATR(m5Candles.slice(0, -1), ATR_PERIOD);
-    if (m5ATR < M5_ATR_MIN) return null;
+    if (m5ATR < atrVal * 0.5) return null;
 
     // Bersihkan lock lama (epoch berbeda) agar Map tidak tumbuh selamanya
     if (lockedSignalsMapRef.current.size > 10) {
@@ -1158,6 +1193,18 @@ export function TradingProvider({ children }: { children: ReactNode }) {
       const locked = lockedSignalsMapRef.current.get(sigKey);
       if (locked) return locked;
 
+      // Guard M15: BUY hanya valid jika harga M15 > EMA50, SELL hanya jika < EMA50
+      if (m15Candles.length >= EMA50_PERIOD) {
+        const m15Closes = m15Candles.map((c) => c.close);
+        const ema50Arr = calcEMA(m15Closes, EMA50_PERIOD);
+        if (ema50Arr.length > 0) {
+          const ema50Val = ema50Arr[ema50Arr.length - 1];
+          const lastM15Close = m15Closes[m15Closes.length - 1];
+          if (dir === "Bullish" && lastM15Close <= ema50Val) return null;
+          if (dir === "Bearish" && lastM15Close >= ema50Val) return null;
+        }
+      }
+
       const range = Math.abs(fibLev.swingHigh - fibLev.swingLow);
       let lo: number, hi: number;
       if (dir === "Bearish") {
@@ -1168,9 +1215,10 @@ export function TradingProvider({ children }: { children: ReactNode }) {
         hi = fibLev.swingHigh - range * 0.50;
       }
 
+      // Zone check: HANYA candle closed, tidak ada live price (anti-repaint)
       const candleTouchesZone = dir === "Bearish"
-        ? closedM5.high >= lo || (currentPrice !== null && currentPrice >= lo && currentPrice <= hi)
-        : closedM5.low <= hi  || (currentPrice !== null && currentPrice >= lo && currentPrice <= hi);
+        ? closedM5.high >= lo
+        : closedM5.low <= hi;
       if (!candleTouchesZone) return null;
 
       const isRejection = checkRejection(closedM5, dir, fibLev);
@@ -1183,11 +1231,26 @@ export function TradingProvider({ children }: { children: ReactNode }) {
       const slDistance = Math.abs(entryPrice - sl);
       if (slDistance < atrVal * 0.1 || atrVal < 0.1) return null;
 
-      const tp1Dist = Math.min(slDistance * 1.0, 15);
-      const tp1 = dir === "Bearish" ? entryPrice - tp1Dist : entryPrice + tp1Dist;
+      // TP1: Fibonacci 127.2% extension dari swing impulse (struktur-anchored)
+      // Level 127.2% = swingHigh + range × 0.272 (Bullish) / swingLow - range × 0.272 (Bearish)
+      const tp1FibLevel = dir === "Bearish"
+        ? fibLev.swingLow - range * 0.272   // 127.2% ext: bearish impuls turun
+        : fibLev.swingHigh + range * 0.272; // 127.2% ext: bullish impuls naik
+      const tp1AtrLevel = dir === "Bearish"
+        ? entryPrice - atrVal * 1.0
+        : entryPrice + atrVal * 1.0;
+      // Ambil target yang lebih konservatif (lebih dekat ke entry)
+      const tp1 = dir === "Bearish"
+        ? Math.max(tp1FibLevel, tp1AtrLevel) // lebih besar = lebih dekat untuk SELL
+        : Math.min(tp1FibLevel, tp1AtrLevel); // lebih kecil = lebih dekat untuk BUY
+      const tp1Dist = Math.abs(tp1 - entryPrice);
 
-      const tp2Dist = Math.min(Math.max(slDistance * 1.8, 10), 28);
-      const tp2 = dir === "Bearish" ? entryPrice - tp2Dist : entryPrice + tp2Dist;
+      // TP2: Fibonacci 161.8% extension dari swing impulse (struktur-anchored)
+      // Level 161.8% = swingHigh + range × 0.618 (Bullish) / swingLow - range × 0.618 (Bearish)
+      const tp2 = dir === "Bearish"
+        ? fibLev.swingLow - range * 0.618   // 161.8% ext: bearish impuls turun
+        : fibLev.swingHigh + range * 0.618; // 161.8% ext: bullish impuls naik
+      const tp2Dist = Math.abs(tp2 - entryPrice);
 
       const riskAmount = balance * 0.01;
       const lotSize = riskAmount / slDistance;
@@ -1228,7 +1291,7 @@ export function TradingProvider({ children }: { children: ReactNode }) {
       return bearAnchor >= bullAnchor ? bearSig : bullSig;
     }
     return bullSig ?? bearSig;
-  }, [bullFibLevels, bearFibLevels, atr, m5Candles, balance, marketState, currentPrice]);
+  }, [bullFibLevels, bearFibLevels, atr, m5Candles, m15Candles, balance, marketState]);
 
   useEffect(() => {
     if (currentSignal) {
@@ -1270,89 +1333,45 @@ export function TradingProvider({ children }: { children: ReactNode }) {
     }
   }, [currentSignal?.id, notificationEnabled]);
 
-  // ─── Track TP/SL hit for active signal ────────────────────────────────────
-  // Pakai activeSignal (bukan currentSignal) supaya tracking tetap berjalan
-  // meskipun currentSignal sudah null (karena single-position rule)
-  const tpSlNotifiedRef = useRef<{ id: string; tp: boolean; sl: boolean }>({
-    id: "",
-    tp: false,
-    sl: false,
-  });
+  // ─── Track TP/SL outcome dari server ─────────────────────────────────────
+  // Server adalah satu-satunya sistem yang memantau TP/SL (via monitorPendingSignals).
+  // Client hanya membaca hasil melalui polling /api/current-signal setiap 15 detik.
+  // useEffect ini hanya memainkan suara dan notifikasi lokal ketika server melaporkan
+  // sinyal sudah resolved (win/loss) — tidak ada logika harga di sini.
+  const tpSlNotifiedRef = useRef<Set<string>>(new Set());
   useEffect(() => {
-    if (!activeSignal || currentPrice === null) return;
-    const tracked = tpSlNotifiedRef.current;
-    if (tracked.id !== activeSignal.id) {
-      tpSlNotifiedRef.current = { id: activeSignal.id, tp: false, sl: false };
-    }
+    if (!activeSignal) return;
 
-    const isBull = activeSignal.trend === "Bullish";
+    if (tpSlNotifiedRef.current.has(activeSignal.id)) return;
 
-    // Check TP1 atau TP2 hit
-    if (!tpSlNotifiedRef.current.tp) {
-      const tp1Hit = isBull
-        ? currentPrice >= activeSignal.takeProfit
-        : currentPrice <= activeSignal.takeProfit;
-      const tp2Hit = activeSignal.takeProfit2 !== undefined
-        ? (isBull ? currentPrice >= activeSignal.takeProfit2 : currentPrice <= activeSignal.takeProfit2)
-        : false;
-      if (tp1Hit || tp2Hit) {
-        const hitLevel = tp2Hit ? activeSignal.takeProfit2! : activeSignal.takeProfit;
-        tpSlNotifiedRef.current.tp = true;
-        tpSlNotifiedRef.current.sl = true;
-        resolvedSignalKeysRef.current.add(activeSignal.id);
-        lockedSignalsMapRef.current.delete(activeSignal.id);
-        updateSignalOutcome(activeSignal.id, "win", activeSignal);
-        setActiveSignal(null);
-        playSignalSound("tp").catch(() => {});
-        if (BACKEND_URL) {
-          fetch(`${BACKEND_URL}/api/ai/outcome`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ signalId: activeSignal.id, outcome: "win" }),
-          }).catch(() => {});
-        }
-        if (notificationEnabled && Platform.OS !== "web") {
-          sendTPAlert({
-            trend: activeSignal.trend,
-            entryPrice: activeSignal.entryPrice,
-            takeProfit: hitLevel,
-            currentPrice,
-          }).catch(() => {});
-        }
+    if (activeSignal.outcome === "win") {
+      tpSlNotifiedRef.current.add(activeSignal.id);
+      resolvedSignalKeysRef.current.add(activeSignal.id);
+      lockedSignalsMapRef.current.delete(activeSignal.id);
+      playSignalSound("tp").catch(() => {});
+      if (notificationEnabled && Platform.OS !== "web" && currentPrice !== null) {
+        sendTPAlert({
+          trend: activeSignal.trend,
+          entryPrice: activeSignal.entryPrice,
+          takeProfit: activeSignal.takeProfit2 ?? activeSignal.takeProfit,
+          currentPrice,
+        }).catch(() => {});
+      }
+    } else if (activeSignal.outcome === "loss") {
+      tpSlNotifiedRef.current.add(activeSignal.id);
+      resolvedSignalKeysRef.current.add(activeSignal.id);
+      lockedSignalsMapRef.current.delete(activeSignal.id);
+      playSignalSound("sl").catch(() => {});
+      if (notificationEnabled && Platform.OS !== "web" && currentPrice !== null) {
+        sendSLAlert({
+          trend: activeSignal.trend,
+          entryPrice: activeSignal.entryPrice,
+          stopLoss: activeSignal.stopLoss,
+          currentPrice,
+        }).catch(() => {});
       }
     }
-
-    // Check SL hit
-    if (!tpSlNotifiedRef.current.sl) {
-      const slHit = isBull
-        ? currentPrice <= activeSignal.stopLoss
-        : currentPrice >= activeSignal.stopLoss;
-      if (slHit) {
-        tpSlNotifiedRef.current.sl = true;
-        tpSlNotifiedRef.current.tp = true;
-        resolvedSignalKeysRef.current.add(activeSignal.id);
-        lockedSignalsMapRef.current.delete(activeSignal.id);
-        updateSignalOutcome(activeSignal.id, "loss", activeSignal);
-        setActiveSignal(null);
-        playSignalSound("sl").catch(() => {});
-        if (BACKEND_URL) {
-          fetch(`${BACKEND_URL}/api/ai/outcome`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ signalId: activeSignal.id, outcome: "loss" }),
-          }).catch(() => {});
-        }
-        if (notificationEnabled && Platform.OS !== "web") {
-          sendSLAlert({
-            trend: activeSignal.trend,
-            entryPrice: activeSignal.entryPrice,
-            stopLoss: activeSignal.stopLoss,
-            currentPrice,
-          }).catch(() => {});
-        }
-      }
-    }
-  }, [currentPrice, activeSignal, notificationEnabled, updateSignalOutcome]);
+  }, [activeSignal?.outcome, activeSignal?.id, notificationEnabled, currentPrice]);
 
   // ─── Demo / Test Signal ────────────────────────────────────────────────────
   const injectDemoSignal = React.useCallback((type: "BUY" | "SELL") => {

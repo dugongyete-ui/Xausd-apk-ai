@@ -9,20 +9,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   app.get("/api/signals", (_req: Request, res: Response) => {
-    const resolved = derivService.getSignalHistory().filter(
-      (s) => s.outcome === "win" || s.outcome === "loss"
-    );
-    res.json(resolved);
+    res.json(derivService.getSignalHistory());
   });
 
-  // GET /api/current-signal — returns the active pending signal (if any)
-  // Used by frontend on startup to restore activeSignal when app opens mid-trade
+  // GET /api/current-signal — returns the most recent signal (pending or just resolved)
+  // Used by frontend polling to track active trade state and receive TP/SL outcomes.
+  // Fallback: jika currentSignal null (mis. setelah restart sebelum candle baru),
+  // kembalikan sinyal pending terbaru dari history yang sudah di-persist.
   app.get("/api/current-signal", (_req: Request, res: Response) => {
     const snapshot = derivService.getSnapshot();
-    const pending = snapshot.currentSignal && snapshot.currentSignal.outcome === "pending"
-      ? snapshot.currentSignal
-      : null;
-    res.json({ signal: pending });
+    const signal = snapshot.currentSignal ?? derivService.getLatestPendingSignal();
+    res.json({ signal });
   });
 
   app.delete("/api/signals", (_req: Request, res: Response) => {

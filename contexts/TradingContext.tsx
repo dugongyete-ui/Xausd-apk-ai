@@ -655,6 +655,7 @@ export function TradingProvider({ children }: { children: ReactNode }) {
     }).catch(() => {});
 
     // Request notification permission + register push token dengan backend
+    let appStateSubscription: ReturnType<typeof AppState.addEventListener> | null = null;
     if (Platform.OS !== "web") {
       requestNotificationPermission().then(async (granted) => {
         setNotificationEnabled(granted);
@@ -665,6 +666,15 @@ export function TradingProvider({ children }: { children: ReactNode }) {
             await registerPushTokenWithBackend(token);
             console.log("[TradingContext] Push token registered:", token.slice(0, 40) + "...");
           }
+        }
+      });
+
+      // Re-register push token setiap kali app kembali ke foreground
+      // Memastikan server selalu punya token terbaru meskipun server pernah restart
+      appStateSubscription = AppState.addEventListener("change", (nextState) => {
+        if (nextState === "active" && pushTokenRef.current) {
+          registerPushTokenWithBackend(pushTokenRef.current).catch(() => {});
+          console.log("[TradingContext] AppState active — re-registering push token");
         }
       });
 
@@ -873,6 +883,8 @@ export function TradingProvider({ children }: { children: ReactNode }) {
       // Cleanup SSE
       if (sseHeartbeatTimeout) clearTimeout(sseHeartbeatTimeout);
       sseSource?.close();
+      // Cleanup AppState listener
+      appStateSubscription?.remove();
     };
 
   }, [findLatestPendingSignal]);

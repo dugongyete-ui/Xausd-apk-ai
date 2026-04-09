@@ -42,7 +42,12 @@ function getDb(): Database.Database {
       marketRegime    TEXT,
       fibLevels       TEXT,
       createdAt       INTEGER NOT NULL DEFAULT (unixepoch())
-    )
+    );
+    CREATE TABLE IF NOT EXISTS push_tokens (
+      token     TEXT PRIMARY KEY,
+      createdAt INTEGER NOT NULL DEFAULT (unixepoch()),
+      updatedAt INTEGER NOT NULL DEFAULT (unixepoch())
+    );
   `);
   console.log("[SignalStore] SQLite database initialised:", DB_PATH);
   return db;
@@ -120,6 +125,41 @@ export function saveSignals(signals: TradingSignal[]): void {
     upsertAll(signals);
   } catch (e) {
     console.error("[SignalStore] Save failed:", (e as Error).message);
+  }
+}
+
+// ─── Push Token Persistence ───────────────────────────────────────────────────
+export function loadPushTokens(): string[] {
+  try {
+    const database = getDb();
+    const rows = database.prepare("SELECT token FROM push_tokens").all() as { token: string }[];
+    console.log(`[SignalStore] Loaded ${rows.length} push token(s) from SQLite`);
+    return rows.map((r) => r.token);
+  } catch (e) {
+    console.error("[SignalStore] loadPushTokens failed:", (e as Error).message);
+    return [];
+  }
+}
+
+export function savePushToken(token: string): void {
+  try {
+    const database = getDb();
+    database.prepare(`
+      INSERT INTO push_tokens (token, updatedAt)
+      VALUES (@token, unixepoch())
+      ON CONFLICT(token) DO UPDATE SET updatedAt = unixepoch()
+    `).run({ token });
+  } catch (e) {
+    console.error("[SignalStore] savePushToken failed:", (e as Error).message);
+  }
+}
+
+export function deletePushToken(token: string): void {
+  try {
+    const database = getDb();
+    database.prepare("DELETE FROM push_tokens WHERE token = ?").run(token);
+  } catch (e) {
+    console.error("[SignalStore] deletePushToken failed:", (e as Error).message);
   }
 }
 

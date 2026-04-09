@@ -1,7 +1,7 @@
 import WebSocket from "ws";
 import https from "https";
 import { aiService } from "./aiService";
-import { loadSignals, saveSignals, clearAllSignals } from "./signalStore";
+import { loadSignals, saveSignals, clearAllSignals, loadPushTokens, savePushToken, deletePushToken } from "./signalStore";
 import { toWIBString, DERIV_WS_URL as SHARED_WS_URL } from "../shared/utils";
 import { detectMarketRegime, MarketRegime } from "../shared/marketRegime";
 
@@ -25,7 +25,7 @@ async function sendExpoPushNotifications(
     sound: "default",
     priority: "high",
     channelId: "trading-signals",
-    ttl: 300,
+    ttl: 86400,
   }));
 
   const payload = JSON.stringify(messages);
@@ -514,7 +514,8 @@ class DerivService {
   private derivMarketClosed = false;
 
   // ─── Push Token Registry ───────────────────────────────────────────────────
-  private pushTokens: Set<string> = new Set();
+  // Loaded from SQLite on startup so tokens survive server restarts
+  private pushTokens: Set<string> = new Set(loadPushTokens());
 
   registerToken(token: string): void {
     if (!token || !token.startsWith("ExponentPushToken")) {
@@ -522,11 +523,13 @@ class DerivService {
       return;
     }
     this.pushTokens.add(token);
+    savePushToken(token);
     console.log(`[PushNotif] Token registered. Total: ${this.pushTokens.size}`);
   }
 
   unregisterToken(token: string): void {
     this.pushTokens.delete(token);
+    deletePushToken(token);
     console.log(`[PushNotif] Token removed. Remaining: ${this.pushTokens.size}`);
   }
 
@@ -535,7 +538,8 @@ class DerivService {
   }
 
   start() {
-    console.log("[DerivService] Starting background service...");
+    const mode = process.env.NODE_ENV === "production" ? "production (vm 24/7)" : "development";
+    console.log(`[DerivService] Starting background service... mode=${mode}, pushTokens=${this.pushTokens.size}`);
     this.connect();
 
     this.marketCheckTimer = setInterval(() => {
@@ -1175,8 +1179,13 @@ class DerivService {
       const dirLabel = isBull ? "BUY ▲" : "SELL ▼";
       const confirmLabel = confirmationType === "engulfing" ? "Engulfing M5" : "Pin Bar M5";
 
+      // Extract HH:MM WIB dari timestampUTC (format: "Sen, 09 Apr 2026 14:35:00 WIB")
+      const timeMatch = signal.timestampUTC.match(/(\d{2}:\d{2}):\d{2} WIB/);
+      const timeLabel = timeMatch ? `${timeMatch[1]} WIB` : "";
+
       const pushTitle = `${dirEmoji} LIBARTIN — SINYAL ${dirLabel} XAUUSD`;
       const pushBody =
+        `⏰ ${timeLabel}\n` +
         `📍 Entry: ${entryPrice.toFixed(2)}\n` +
         `🛑 SL: ${sl.toFixed(2)}\n` +
         `🎯 TP1: ${tp1.toFixed(2)}  |  TP2: ${tp2.toFixed(2)}\n` +

@@ -5,6 +5,8 @@
  */
 
 import WebSocket from "ws";
+import * as fs from "fs";
+import * as path from "path";
 import { detectMarketRegime, MarketRegime } from "../shared/marketRegime";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -61,6 +63,7 @@ const MIN_RR2 = 1.0;                  // Minimum RR di TP2 agar sinyal layak dia
 const args = process.argv.slice(2);
 const DAYS_WINDOW = (() => { const d = args.find((a) => a.startsWith("--days=")); if (!d) return 7; const n = parseInt(d.split("=")[1]); return Math.min(30, Math.max(1, isNaN(n) ? 7 : n)); })();
 const FILTER_SESSION = args.includes("--active-only"); // hanya hitung active session di winrate utama
+const SAVE_RESULTS = args.includes("--save"); // export results to JSON file
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 function calcEMA(closes: number[], period: number): number[] {
@@ -817,6 +820,38 @@ async function runBacktest() {
   if (signals.length === 0) {
     console.log(`  ⚠  Tidak ada sinyal terbentuk dalam ${DAYS_WINDOW} hari terakhir.`);
     console.log("  Kemungkinan kondisi: pasar sideways / tidak memenuhi kriteria EMA50/fib/pattern.\n");
+  }
+
+  if (SAVE_RESULTS) {
+    const resultsDir = path.join(__dirname, "results");
+    if (!fs.existsSync(resultsDir)) {
+      fs.mkdirSync(resultsDir, { recursive: true });
+    }
+
+    const now = new Date();
+    const pad = (n: number) => String(n).padStart(2, "0");
+    const dateStr =
+      `${now.getUTCFullYear()}${pad(now.getUTCMonth() + 1)}${pad(now.getUTCDate())}` +
+      `_${pad(now.getUTCHours())}${pad(now.getUTCMinutes())}`;
+    const filename = `backtest_${dateStr}.json`;
+    const filepath = path.join(resultsDir, filename);
+
+    const resolvedCount = evalSignals.filter((s) => s.outcome === "loss" || isWin(s)).length;
+    const winsCount = evalSignals.filter(isWin).length;
+
+    const output = {
+      metadata: {
+        period: `${new Date(startEpoch * 1000).toISOString()} → ${new Date(nowEpoch * 1000).toISOString()}`,
+        days: DAYS_WINDOW,
+        totalSignals: evalSignals.length,
+        winrate: resolvedCount > 0 ? parseFloat(((winsCount / resolvedCount) * 100).toFixed(2)) : null,
+        ev: ev === "N/A" ? null : parseFloat(ev),
+      },
+      signals: evalSignals,
+    };
+
+    fs.writeFileSync(filepath, JSON.stringify(output, null, 2), "utf-8");
+    console.log(`  ✓ Results saved to: ${filepath}\n`);
   }
 }
 

@@ -299,11 +299,17 @@ function streamCohereHTTP(
     );
 
     req.on("error", reject);
-    req.setTimeout(60000, () => {
-      req.destroy(new Error("Cohere stream timeout (60s)"));
-    });
+
+    // Overall hard timeout — kills the request regardless of data flow
+    const killTimer = setTimeout(() => {
+      req.destroy(new Error("Cohere stream timeout (85s)"));
+    }, 85000);
+
     req.write(body);
     req.end();
+
+    // Clear kill timer once the response ends cleanly
+    req.on("close", () => clearTimeout(killTimer));
   });
 }
 

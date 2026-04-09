@@ -502,10 +502,9 @@ export default function AIScreen() {
       content: text,
     };
 
-    // Thinking phase bubble — tampil selama AI berpikir
+    // Thinking phase bubble
     const thinkingBubbleId = `think_${Date.now()}`;
     thinkingIdRef.current = thinkingBubbleId;
-
     const thinkingMsg: ChatMessage = {
       id: thinkingBubbleId,
       role: "assistant",
@@ -539,12 +538,81 @@ export default function AIScreen() {
       setIsStreaming(false);
     };
 
+    // ── Display animation ticker ──────────────────────────────────────────────
+    // Decouples visual animation from data arrival speed.
+    // Works whether data streams token-by-token or arrives all at once (proxy-buffered).
+    let fullReceived = "";      // all content received from server (grows as chunks arrive)
+    let displayedLen = 0;       // how many chars have been shown to user
+    let streamDone = false;     // true when server closes the stream
+    let thinkingText: string | undefined;
+    let messageCreated = false; // true once thinking bubble is replaced with real msg
+
+    const TICK_MS = 22; // ~45 chars/s — smooth on mobile
+
+    const runTicker = () => {
+      const advance = () => {
+        if (displayedLen < fullReceived.length) {
+          // Advance by one word-token at a time
+          const remaining = fullReceived.slice(displayedLen);
+          const match = remaining.match(/^(\S+\s*)/);
+          const step = match ? match[1] : remaining[0];
+          displayedLen += step.length;
+          const cur = fullReceived.slice(0, displayedLen);
+
+          setMessages((prev) =>
+            prev.map((m) => (m.id === msgId ? { ...m, content: cur, streaming: true } : m))
+          );
+          scrollToBottom();
+          setTimeout(advance, TICK_MS);
+        } else if (!streamDone) {
+          // Waiting for more data
+          setTimeout(advance, TICK_MS);
+        } else {
+          // All content displayed and stream is done
+          streamingIdRef.current = null;
+          setMessages((prev) =>
+            prev.map((m) => (m.id === msgId ? { ...m, streaming: false } : m))
+          );
+          setIsStreaming(false);
+        }
+      };
+      setTimeout(advance, TICK_MS);
+    };
+
+    // Creates the real AI message (replaces thinking bubble) and starts the ticker
+    const initMessage = (thinking?: string) => {
+      if (messageCreated) return;
+      messageCreated = true;
+      setMessages((prev) => {
+        const filtered = prev.filter((m) => m.id !== thinkingBubbleId);
+        return [
+          ...filtered,
+          {
+            id: msgId,
+            role: "assistant" as const,
+            content: "",
+            ...(thinking ? { thinking } : {}),
+            streaming: true,
+          },
+        ];
+      });
+      scrollToBottom();
+      runTicker();
+    };
+
+    // ── Fetch + SSE parse ─────────────────────────────────────────────────────
     try {
+      const controller = new AbortController();
+      const fetchTimeout = setTimeout(() => controller.abort(), 90000); // 90s max
+
       const res = await fetch(`${BACKEND_URL}/api/ai/stream`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ message: text }),
+        signal: controller.signal,
       });
+
+      clearTimeout(fetchTimeout);
 
       if (!res.ok) {
         const errBody = await res.text().catch(() => "");
@@ -557,23 +625,15 @@ export default function AIScreen() {
         return;
       }
 
-      if (!res.body) {
-        showError("Browser tidak mendukung streaming. Coba refresh halaman.");
-        return;
-      }
+      // Read full response as text (handles both streaming and buffered environments)
+      const rawBody = await res.text();
 
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-
+      // Parse all SSE events from the complete body text
       let lineBuffer = "";
       let currentEvent = "";
-      let contentBuilt = "";
-      let thinkingReceived: string | undefined;
-      let responseStarted = false;
 
-      // Parse SSE line-by-line from the stream
-      const processLines = (rawText: string) => {
-        lineBuffer += rawText;
+      const processLines = (text: string) => {
+        lineBuffer += text;
         const lines = lineBuffer.split("\n");
         lineBuffer = lines.pop() ?? "";
 
@@ -588,24 +648,9 @@ export default function AIScreen() {
             if (currentEvent === "thinking") {
               try {
                 const parsed = JSON.parse(rawData) as { thinking?: string };
-                if (parsed.thinking) {
-                  thinkingReceived = parsed.thinking;
-                  // Replace thinking bubble → real message with thinking panel
-                  setMessages((prev) => {
-                    const filtered = prev.filter((m) => m.id !== thinkingBubbleId);
-                    return [
-                      ...filtered,
-                      {
-                        id: msgId,
-                        role: "assistant" as const,
-                        content: "",
-                        thinking: thinkingReceived,
-                        streaming: true,
-                      },
-                    ];
-                  });
-                  responseStarted = true;
-                  scrollToBottom();
+                if (parsed.thinking && !thinkingText) {
+                  thinkingText = parsed.thinking;
+                  initMessage(thinkingText);
                 }
               } catch { /* ignore */ }
 
@@ -613,41 +658,10 @@ export default function AIScreen() {
               try {
                 const parsed = JSON.parse(rawData) as { chunk?: string };
                 if (parsed.chunk) {
-                  contentBuilt += parsed.chunk;
-                  const cur = contentBuilt;
-
-                  if (!responseStarted) {
-                    // No thinking received yet — replace bubble with real message
-                    setMessages((prev) => {
-                      const filtered = prev.filter((m) => m.id !== thinkingBubbleId);
-                      return [
-                        ...filtered,
-                        {
-                          id: msgId,
-                          role: "assistant" as const,
-                          content: cur,
-                          streaming: true,
-                        },
-                      ];
-                    });
-                    responseStarted = true;
-                  } else {
-                    setMessages((prev) =>
-                      prev.map((m) =>
-                        m.id === msgId ? { ...m, content: cur, streaming: true } : m
-                      )
-                    );
-                  }
-                  scrollToBottom();
+                  if (!messageCreated) initMessage(thinkingText);
+                  fullReceived += parsed.chunk;
                 }
               } catch { /* ignore */ }
-
-            } else if (currentEvent === "done" || rawData === "[DONE]") {
-              streamingIdRef.current = null;
-              setMessages((prev) =>
-                prev.map((m) => (m.id === msgId ? { ...m, streaming: false } : m))
-              );
-              setIsStreaming(false);
 
             } else if (currentEvent === "error") {
               try {
@@ -658,34 +672,25 @@ export default function AIScreen() {
               }
             }
 
-            // Reset event name after processing data
             currentEvent = "";
           }
-          // Empty line = event separator, already handled by resetting event above
         }
       };
 
-      // Read stream until done
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        processLines(decoder.decode(value, { stream: true }));
+      processLines(rawBody);
+      streamDone = true;
+
+      // If no content came through at all, show error
+      if (!messageCreated) {
+        showError("AI tidak dapat merespons saat ini. Coba lagi sebentar.");
       }
 
-      // Finalize if stream ended without explicit done event
-      if (streamingIdRef.current === msgId) {
-        streamingIdRef.current = null;
-        setMessages((prev) =>
-          prev.map((m) => (m.id === msgId ? { ...m, streaming: false } : m))
-        );
-        setIsStreaming(false);
-      }
     } catch (err: unknown) {
-      const errMsg =
-        err instanceof Error
-          ? err.message
-          : "Koneksi ke server gagal. Coba lagi dalam beberapa detik.";
-      showError(errMsg);
+      if (err instanceof Error && err.name === "AbortError") {
+        showError("AI memerlukan waktu terlalu lama. Coba lagi sebentar.");
+      } else {
+        showError("Koneksi ke server gagal. Coba lagi dalam beberapa detik.");
+      }
     }
   }, [input, isStreaming, scrollToBottom]);
 

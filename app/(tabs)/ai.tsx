@@ -15,15 +15,18 @@ import {
   Platform,
   ActivityIndicator,
   Animated,
+  LayoutAnimation,
+  UIManager,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import C from "@/constants/colors";
 
+if (Platform.OS === "android" && UIManager.setLayoutAnimationEnabledExperimental) {
+  UIManager.setLayoutAnimationEnabledExperimental(true);
+}
+
 // ─── Backend URL ───────────────────────────────────────────────────────────────
-// On web browser, always use the current page origin so API calls work
-// whether in dev preview or published (avoids wrong domain issues).
-// On native (Expo Go / APK), use EXPO_PUBLIC_DOMAIN.
 function getBackendUrl(): string {
   const explicit = process.env.EXPO_PUBLIC_BACKEND_URL;
   if (explicit) return explicit.startsWith("http") ? explicit : `https://${explicit}`;
@@ -43,7 +46,9 @@ interface ChatMessage {
   id: string;
   role: "user" | "assistant";
   content: string;
+  thinking?: string;
   streaming?: boolean;
+  thinkingPhase?: boolean;
 }
 
 // ─── Typing Dots Animation ─────────────────────────────────────────────────────
@@ -114,9 +119,136 @@ const typingStyles = StyleSheet.create({
   },
 });
 
+// ─── Thinking Process Panel ────────────────────────────────────────────────────
+function ThinkingProcess({ thinking }: { thinking: string }) {
+  const [expanded, setExpanded] = useState(false);
+
+  const toggle = () => {
+    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+    setExpanded((v) => !v);
+  };
+
+  return (
+    <View style={thinkStyles.wrapper}>
+      <Pressable onPress={toggle} style={thinkStyles.header}>
+        <View style={thinkStyles.headerLeft}>
+          <Ionicons name="flash" size={13} color={C.gold} />
+          <Text style={thinkStyles.headerLabel}>Proses Berpikir</Text>
+        </View>
+        <Ionicons
+          name={expanded ? "chevron-up" : "chevron-down"}
+          size={14}
+          color={C.textDim}
+        />
+      </Pressable>
+      {expanded && (
+        <View style={thinkStyles.body}>
+          <Text style={thinkStyles.text}>{thinking}</Text>
+        </View>
+      )}
+    </View>
+  );
+}
+
+const thinkStyles = StyleSheet.create({
+  wrapper: {
+    marginBottom: 6,
+    marginLeft: 40,
+    marginRight: 16,
+    borderRadius: 10,
+    overflow: "hidden",
+    borderWidth: 1,
+    borderColor: C.gold + "33",
+    backgroundColor: C.gold + "0A",
+  },
+  header: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  headerLeft: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
+  headerLabel: {
+    fontFamily: "Inter_500Medium",
+    fontSize: 12,
+    color: C.gold,
+    letterSpacing: 0.3,
+  },
+  body: {
+    paddingHorizontal: 12,
+    paddingBottom: 10,
+    borderTopWidth: 1,
+    borderTopColor: C.gold + "22",
+  },
+  text: {
+    fontFamily: "Inter_400Regular",
+    fontSize: 12,
+    color: C.textSub,
+    lineHeight: 18,
+    marginTop: 8,
+  },
+});
+
+// ─── Thinking Phase Bubble (saat AI sedang berpikir) ─────────────────────────
+function ThinkingPhaseBubble() {
+  const pulse = useRef(new Animated.Value(0.5)).current;
+
+  useEffect(() => {
+    const anim = Animated.loop(
+      Animated.sequence([
+        Animated.timing(pulse, { toValue: 1, duration: 800, useNativeDriver: true }),
+        Animated.timing(pulse, { toValue: 0.5, duration: 800, useNativeDriver: true }),
+      ])
+    );
+    anim.start();
+    return () => anim.stop();
+  }, [pulse]);
+
+  return (
+    <View style={[bubbleStyles.row, bubbleStyles.rowLeft]}>
+      <View style={bubbleStyles.avatarAI}>
+        <Text style={bubbleStyles.avatarText}>AI</Text>
+      </View>
+      <Animated.View style={[thinkPhaseStyles.bubble, { opacity: pulse }]}>
+        <Ionicons name="flash" size={12} color={C.gold} />
+        <Text style={thinkPhaseStyles.text}>Sedang menganalisis...</Text>
+      </Animated.View>
+    </View>
+  );
+}
+
+const thinkPhaseStyles = StyleSheet.create({
+  bubble: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    backgroundColor: C.gold + "15",
+    borderWidth: 1,
+    borderColor: C.gold + "44",
+    borderRadius: 14,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  text: {
+    fontFamily: "Inter_400Regular",
+    fontSize: 13,
+    color: C.gold,
+    opacity: 0.9,
+  },
+});
+
 // ─── Message Bubble ────────────────────────────────────────────────────────────
 function MessageBubble({ msg }: { msg: ChatMessage }) {
   const isUser = msg.role === "user";
+
+  if (msg.thinkingPhase) {
+    return <ThinkingPhaseBubble />;
+  }
 
   if (msg.streaming && !msg.content) {
     return (
@@ -132,28 +264,33 @@ function MessageBubble({ msg }: { msg: ChatMessage }) {
   }
 
   return (
-    <View style={[bubbleStyles.row, isUser ? bubbleStyles.rowRight : bubbleStyles.rowLeft]}>
-      {!isUser && (
-        <View style={bubbleStyles.avatarAI}>
-          <Text style={bubbleStyles.avatarText}>AI</Text>
-        </View>
+    <View>
+      {!isUser && msg.thinking && (
+        <ThinkingProcess thinking={msg.thinking} />
       )}
-      <View
-        style={[
-          bubbleStyles.bubble,
-          isUser ? bubbleStyles.bubbleUser : bubbleStyles.bubbleAI,
-        ]}
-      >
-        <Text style={[bubbleStyles.text, isUser ? bubbleStyles.textUser : bubbleStyles.textAI]}>
-          {msg.content}
-          {msg.streaming && <Text style={bubbleStyles.cursor}>▌</Text>}
-        </Text>
+      <View style={[bubbleStyles.row, isUser ? bubbleStyles.rowRight : bubbleStyles.rowLeft]}>
+        {!isUser && (
+          <View style={bubbleStyles.avatarAI}>
+            <Text style={bubbleStyles.avatarText}>AI</Text>
+          </View>
+        )}
+        <View
+          style={[
+            bubbleStyles.bubble,
+            isUser ? bubbleStyles.bubbleUser : bubbleStyles.bubbleAI,
+          ]}
+        >
+          <Text style={[bubbleStyles.text, isUser ? bubbleStyles.textUser : bubbleStyles.textAI]}>
+            {msg.content}
+            {msg.streaming && <Text style={bubbleStyles.cursor}>▌</Text>}
+          </Text>
+        </View>
+        {isUser && (
+          <View style={bubbleStyles.avatarUser}>
+            <Ionicons name="person" size={14} color={C.bg} />
+          </View>
+        )}
       </View>
-      {isUser && (
-        <View style={bubbleStyles.avatarUser}>
-          <Ionicons name="person" size={14} color={C.bg} />
-        </View>
-      )}
     </View>
   );
 }
@@ -239,6 +376,10 @@ function EmptyState({ onHintPress }: { onHintPress: (text: string) => void }) {
       <Text style={emptyStyles.sub}>
         Tanya kondisi pasar, analisis sinyal, atau apapun tentang trading XAUUSD
       </Text>
+      <View style={emptyStyles.thinkingBadge}>
+        <Ionicons name="flash" size={11} color={C.gold} />
+        <Text style={emptyStyles.thinkingBadgeText}>Mode Berpikir Aktif</Text>
+      </View>
       <View style={emptyStyles.hints}>
         {[
           "Bagaimana kondisi market sekarang?",
@@ -293,7 +434,24 @@ const emptyStyles = StyleSheet.create({
     color: C.textSub,
     textAlign: "center",
     lineHeight: 20,
-    marginBottom: 24,
+    marginBottom: 12,
+  },
+  thinkingBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    backgroundColor: C.gold + "15",
+    borderWidth: 1,
+    borderColor: C.gold + "33",
+    borderRadius: 20,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    marginBottom: 20,
+  },
+  thinkingBadgeText: {
+    fontFamily: "Inter_500Medium",
+    fontSize: 11,
+    color: C.gold,
   },
   hints: { gap: 8, alignSelf: "stretch" },
   hintChip: {
@@ -323,6 +481,7 @@ export default function AIScreen() {
   const [isStreaming, setIsStreaming] = useState(false);
   const flatListRef = useRef<FlatList>(null);
   const streamingIdRef = useRef<string | null>(null);
+  const thinkingIdRef = useRef<string | null>(null);
   const inputRef = useRef<TextInput>(null);
 
   const scrollToBottom = useCallback(() => {
@@ -343,21 +502,26 @@ export default function AIScreen() {
       content: text,
     };
 
-    const msgId = `a_${Date.now()}`;
-    streamingIdRef.current = msgId;
+    // Thinking phase bubble — ditampilkan saat AI memproses
+    const thinkingBubbleId = `think_${Date.now()}`;
+    thinkingIdRef.current = thinkingBubbleId;
 
-    const placeholderMsg: ChatMessage = {
-      id: msgId,
+    const thinkingMsg: ChatMessage = {
+      id: thinkingBubbleId,
       role: "assistant",
       content: "",
-      streaming: true,
+      thinkingPhase: true,
     };
 
-    setMessages((prev) => [...prev, userMsg, placeholderMsg]);
+    const msgId = `a_${Date.now() + 1}`;
+    streamingIdRef.current = msgId;
+
+    setMessages((prev) => [...prev, userMsg, thinkingMsg]);
     setIsStreaming(true);
     scrollToBottom();
 
     if (!BACKEND_URL) {
+      setMessages((prev) => prev.filter((m) => m.id !== thinkingBubbleId));
       setMessages((prev) =>
         prev.map((m) =>
           m.id === msgId
@@ -369,14 +533,15 @@ export default function AIScreen() {
       return;
     }
 
-    const showError = (msg: string) => {
-      setMessages((prev) =>
-        prev.map((m) => m.id === msgId ? { ...m, content: msg, streaming: false } : m)
-      );
+    const showError = (errMsg: string) => {
+      setMessages((prev) => prev.filter((m) => m.id !== thinkingBubbleId));
+      setMessages((prev) => [
+        ...prev,
+        { id: msgId, role: "assistant", content: errMsg, streaming: false },
+      ]);
       setIsStreaming(false);
     };
 
-    // Helper: kirim pesan ke backend, retry 1x jika gagal (misal server baru start)
     const sendWithRetry = async (attempt = 0): Promise<{ requestId?: string } | null> => {
       try {
         const res = await fetch(`${BACKEND_URL}/api/ai/chat`, {
@@ -397,7 +562,6 @@ export default function AIScreen() {
         try {
           return JSON.parse(raw) as { requestId?: string };
         } catch {
-          // Non-JSON (e.g. HTML during server restart) — retry once
           if (attempt === 0) {
             console.warn("[AI] Non-JSON response, retrying in 3s...");
             await new Promise((r) => setTimeout(r, 3000));
@@ -429,8 +593,6 @@ export default function AIScreen() {
         return;
       }
 
-      // Step 2: Poll every 2s for the response matching our requestId
-      // The backend stores requestId in message metadata — guaranteed unique match
       const startedAt = Date.now();
       const MAX_WAIT = 90000;
       let polling = true;
@@ -455,13 +617,13 @@ export default function AIScreen() {
                 id: string;
                 role: string;
                 content: string;
+                thinking?: string;
                 type: string;
                 metadata?: { requestId?: string };
               }>
             };
             const msgs = data.messages ?? [];
 
-            // Find the AI response that matches our exact requestId
             const matched = msgs.find(
               (m) =>
                 m.role === "assistant" &&
@@ -473,11 +635,22 @@ export default function AIScreen() {
               polling = false;
               streamingIdRef.current = null;
 
+              const thinking = matched.thinking ?? undefined;
               const reply = matched.content.trim() || "Maaf, AI tidak dapat merespons saat ini.";
               const words = reply.match(/\S+\s*/g) ?? [];
               let i = 0;
               let built = "";
               const ms = Math.max(25, Math.min(70, Math.floor(1800 / Math.max(words.length, 1))));
+
+              // Ganti thinking bubble dengan pesan AI (dengan thinking panel)
+              setMessages((prev) => {
+                const filtered = prev.filter((m) => m.id !== thinkingBubbleId);
+                return [
+                  ...filtered,
+                  { id: msgId, role: "assistant", content: "", thinking, streaming: true },
+                ];
+              });
+              scrollToBottom();
 
               const wordTimer = setInterval(() => {
                 if (i < words.length) {
@@ -541,7 +714,10 @@ export default function AIScreen() {
             <Text style={styles.headerByline}>by Dzeck X Wakassim</Text>
           </View>
         </View>
-        <Text style={styles.headerSub}>XAUUSD Trading Advisor</Text>
+        <View style={styles.headerRight}>
+          <Ionicons name="flash" size={11} color={C.gold} />
+          <Text style={styles.headerSub}>Thinking Mode</Text>
+        </View>
       </View>
 
       <View style={styles.flex}>
@@ -567,12 +743,6 @@ export default function AIScreen() {
         keyboardVerticalOffset={Platform.OS === "ios" ? 0 : 0}
       >
         <View style={styles.inputBar}>
-          {isStreaming && (
-            <View style={styles.thinkingBar}>
-              <ActivityIndicator size="small" color={C.gold} />
-              <Text style={styles.thinkingText}>AI sedang memproses...</Text>
-            </View>
-          )}
           <View style={styles.inputRow}>
             <TextInput
               ref={inputRef}
@@ -630,6 +800,17 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: 8,
   },
+  headerRight: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    backgroundColor: C.gold + "15",
+    borderWidth: 1,
+    borderColor: C.gold + "33",
+    borderRadius: 12,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+  },
   headerDot: {
     width: 8,
     height: 8,
@@ -650,26 +831,13 @@ const styles = StyleSheet.create({
     marginTop: 1,
   },
   headerSub: {
-    fontFamily: "Inter_400Regular",
+    fontFamily: "Inter_500Medium",
     fontSize: 11,
-    color: C.textSub,
+    color: C.gold,
   },
   listContent: {
     paddingTop: 16,
     paddingBottom: 8,
-  },
-  thinkingBar: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-    paddingHorizontal: 16,
-    paddingBottom: 8,
-  },
-  thinkingText: {
-    fontFamily: "Inter_400Regular",
-    fontSize: 12,
-    color: C.gold,
-    opacity: 0.8,
   },
   inputBar: {
     backgroundColor: C.surface,

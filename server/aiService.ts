@@ -34,6 +34,7 @@ export interface AIMessage {
   id: string;
   role: "assistant" | "user";
   content: string;
+  thinking?: string;
   type: "signal" | "outcome" | "market" | "user_chat" | "system";
   timestamp: string;
   metadata?: {
@@ -48,6 +49,19 @@ export interface AIMessage {
 interface ConversationTurn {
   role: "user" | "assistant";
   content: string;
+}
+
+// ─── Parse Thinking Tags ──────────────────────────────────────────────────────
+// Pisahkan konten <thinking>...</thinking> dari respons utama AI.
+// Model diminta menulis proses berpikir dalam tag ini sebelum menjawab.
+function parseThinking(raw: string): { thinking: string | null; response: string } {
+  const match = raw.match(/^<thinking>([\s\S]*?)<\/thinking>\s*/);
+  if (match) {
+    const thinking = match[1].trim();
+    const response = raw.slice(match[0].length).trim();
+    return { thinking: thinking || null, response };
+  }
+  return { thinking: null, response: raw };
 }
 
 // ─── Strip Markdown ────────────────────────────────────────────────────────────
@@ -706,15 +720,26 @@ class AIService {
     const messages: Array<{ role: string; content: string }> = [];
     const recentHistory = this.conversationHistory.slice(-6);
 
+    // Instruksi thinking — model diminta menulis proses analisis dalam <thinking> tags
+    // sebelum jawaban utama. Ini akan ditampilkan sebagai "Proses Berpikir" di UI.
+    const thinkingPrefix =
+      `[MODE BERPIKIR AKTIF]\n` +
+      `Sebelum menjawab, tulis proses analisamu dalam tag <thinking>...</thinking>. ` +
+      `Isi tag: bagaimana kamu membaca pertanyaan ini, data pasar mana yang paling relevan, ` +
+      `dan apa inti jawaban yang paling tepat untuk trader. Tulis 2-4 kalimat di dalam tag — ` +
+      `tajam dan fokus. Setelah tag, tulis jawaban utama dalam teks biasa tanpa tag.\n\n`;
+
+    const firstUserContent = `${marketCtx}\n\nPertanyaan: ${userMessage}`;
+
     if (recentHistory.length === 0) {
       messages.push({
         role: "user",
-        content: `${marketCtx}\n\nPertanyaan: ${userMessage}`,
+        content: thinkingPrefix + firstUserContent,
       });
     } else {
       messages.push({
         role: "user",
-        content: `${marketCtx}\n\nPertanyaan sebelumnya: ${recentHistory[0].content}`,
+        content: thinkingPrefix + `${marketCtx}\n\nPertanyaan sebelumnya: ${recentHistory[0].content}`,
       });
       for (let i = 1; i < recentHistory.length; i++) {
         messages.push({ role: recentHistory[i].role, content: recentHistory[i].content });
@@ -722,22 +747,24 @@ class AIService {
       messages.push({ role: "user", content: userMessage });
     }
 
-    const response = await callCohereAI(messages);
+    const rawResponse = await callCohereAI(messages);
+    const { thinking, response: parsed } = parseThinking(rawResponse ?? "");
 
-    // Always pick a final reply — never leave displayMessages empty after a chat
-    const clean = response
-      ? stripMarkdown(response)
+    const clean = parsed
+      ? stripMarkdown(parsed)
       : "Maaf, AI tidak dapat merespons saat ini. Silakan coba lagi sebentar.";
+
+    const cleanThinking = thinking ? stripMarkdown(thinking) : undefined;
 
     this.addToHistory("user", userMessage);
     this.addToHistory("assistant", clean);
 
-    // CRITICAL: always add both messages so the frontend poll can find the response
     this.addDisplayMessage({ role: "user", content: userMessage, type: "user_chat" });
     this.addDisplayMessage({
       role: "assistant",
       content: clean,
       type: "user_chat",
+      thinking: cleanThinking,
       ...(requestId ? { metadata: { requestId } } : {}),
     });
 
@@ -749,22 +776,29 @@ class AIService {
     userMessage: string,
     snapshot: MarketStateSnapshot,
     onChunk: (chunk: string) => void,
-    onDone: (fullResponse: string) => void,
+    onDone: (fullResponse: string, thinking?: string) => void,
     onError: (err: string) => void
   ): void {
     const marketCtx = buildMarketContext(snapshot);
     const messages: Array<{ role: string; content: string }> = [];
     const recentHistory = this.conversationHistory.slice(-6);
 
+    const thinkingPrefix =
+      `[MODE BERPIKIR AKTIF]\n` +
+      `Sebelum menjawab, tulis proses analisamu dalam tag <thinking>...</thinking>. ` +
+      `Isi tag: bagaimana kamu membaca pertanyaan ini, data pasar mana yang paling relevan, ` +
+      `dan apa inti jawaban yang paling tepat untuk trader. Tulis 2-4 kalimat di dalam tag — ` +
+      `tajam dan fokus. Setelah tag, tulis jawaban utama dalam teks biasa tanpa tag.\n\n`;
+
     if (recentHistory.length === 0) {
       messages.push({
         role: "user",
-        content: `${marketCtx}\n\nPertanyaan: ${userMessage}`,
+        content: thinkingPrefix + `${marketCtx}\n\nPertanyaan: ${userMessage}`,
       });
     } else {
       messages.push({
         role: "user",
-        content: `${marketCtx}\n\nPertanyaan sebelumnya: ${recentHistory[0].content}`,
+        content: thinkingPrefix + `${marketCtx}\n\nPertanyaan sebelumnya: ${recentHistory[0].content}`,
       });
       for (let i = 1; i < recentHistory.length; i++) {
         messages.push({ role: recentHistory[i].role, content: recentHistory[i].content });
@@ -773,14 +807,16 @@ class AIService {
     }
 
     callCohereAI(messages).then((fullResponse) => {
-      const clean = fullResponse.trim() || "Maaf, AI tidak dapat merespons saat ini.";
+      const { thinking, response: parsed } = parseThinking(fullResponse ?? "");
+      const clean = parsed.trim() || "Maaf, AI tidak dapat merespons saat ini.";
+      const cleanThinking = thinking ? stripMarkdown(thinking) : undefined;
 
       this.addToHistory("user", userMessage);
       this.addToHistory("assistant", clean);
       this.addDisplayMessage({ role: "user", content: userMessage, type: "user_chat" });
-      this.addDisplayMessage({ role: "assistant", content: clean, type: "user_chat" });
+      this.addDisplayMessage({ role: "assistant", content: clean, type: "user_chat", thinking: cleanThinking });
 
-      streamWordByWord(clean, onChunk, () => onDone(clean));
+      streamWordByWord(clean, onChunk, () => onDone(clean, cleanThinking));
     }).catch((err: Error) => {
       onError(err.message || "AI error");
     });

@@ -1067,6 +1067,11 @@ class AIService {
     return this.displayMessages.slice(0, limit);
   }
 
+  clearMessages(): void {
+    this.displayMessages = [];
+    this.conversationHistory = [];
+  }
+
   isReady(): boolean {
     return !this.isGenerating;
   }

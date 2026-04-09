@@ -18,6 +18,7 @@ import {
   LayoutAnimation,
   UIManager,
   ScrollView,
+  Alert,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
@@ -48,84 +49,15 @@ interface ChatMessage {
   role: "user" | "assistant";
   content: string;
   thinking?: string;
-  streamingThinking?: string;  // live thinking text accumulating
-  isThinkingStreaming?: boolean; // true while thinking tokens are arriving
+  streamingThinking?: string;
+  isThinkingStreaming?: boolean;
   streaming?: boolean;
   thinkingPhase?: boolean;
 }
 
-// ─── Typing Dots Animation ─────────────────────────────────────────────────────
-function TypingDots() {
-  const dot1 = useRef(new Animated.Value(0)).current;
-  const dot2 = useRef(new Animated.Value(0)).current;
-  const dot3 = useRef(new Animated.Value(0)).current;
-
-  useEffect(() => {
-    const animate = (dot: Animated.Value, delay: number) =>
-      Animated.loop(
-        Animated.sequence([
-          Animated.delay(delay),
-          Animated.timing(dot, { toValue: 1, duration: 300, useNativeDriver: true }),
-          Animated.timing(dot, { toValue: 0, duration: 300, useNativeDriver: true }),
-          Animated.delay(600 - delay),
-        ])
-      );
-
-    const a1 = animate(dot1, 0);
-    const a2 = animate(dot2, 200);
-    const a3 = animate(dot3, 400);
-    a1.start();
-    a2.start();
-    a3.start();
-
-    return () => {
-      a1.stop();
-      a2.stop();
-      a3.stop();
-    };
-  }, [dot1, dot2, dot3]);
-
-  const dotStyle = (anim: Animated.Value) => ({
-    opacity: anim,
-    transform: [
-      {
-        translateY: anim.interpolate({
-          inputRange: [0, 1],
-          outputRange: [0, -6],
-        }),
-      },
-    ],
-  });
-
-  return (
-    <View style={typingStyles.container}>
-      <Animated.View style={[typingStyles.dot, dotStyle(dot1)]} />
-      <Animated.View style={[typingStyles.dot, dotStyle(dot2)]} />
-      <Animated.View style={[typingStyles.dot, dotStyle(dot3)]} />
-    </View>
-  );
-}
-
-const typingStyles = StyleSheet.create({
-  container: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 5,
-    paddingVertical: 6,
-    paddingHorizontal: 4,
-  },
-  dot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    backgroundColor: C.gold,
-  },
-});
-
-// ─── Streaming Cursor ──────────────────────────────────────────────────────────
-function StreamCursor() {
+// ─── Blinking Cursor ───────────────────────────────────────────────────────────
+function BlinkCursor({ color = C.text }: { color?: string }) {
   const opacity = useRef(new Animated.Value(1)).current;
-
   useEffect(() => {
     const anim = Animated.loop(
       Animated.sequence([
@@ -136,179 +68,22 @@ function StreamCursor() {
     anim.start();
     return () => anim.stop();
   }, [opacity]);
-
-  return (
-    <Animated.Text style={[thinkStyles.cursor, { opacity }]}>▌</Animated.Text>
-  );
+  return <Animated.Text style={{ opacity, color, fontSize: 14 }}>▌</Animated.Text>;
 }
 
-// ─── Live Thinking Bubble (streaming in real-time) ─────────────────────────────
-// Ditampilkan saat AI sedang berpikir — bisa diklik untuk expand dan lihat teks
-function LiveThinkingBubble({
+// ─── Thinking Disclosure Panel ─────────────────────────────────────────────────
+function ThinkingPanel({
   text,
-  isStreaming,
+  isLive,
 }: {
   text: string;
-  isStreaming: boolean;
+  isLive: boolean;
 }) {
   const [expanded, setExpanded] = useState(false);
-  const pulse = useRef(new Animated.Value(0.6)).current;
-
-  useEffect(() => {
-    if (!isStreaming) return;
-    const anim = Animated.loop(
-      Animated.sequence([
-        Animated.timing(pulse, { toValue: 1, duration: 700, useNativeDriver: true }),
-        Animated.timing(pulse, { toValue: 0.6, duration: 700, useNativeDriver: true }),
-      ])
-    );
-    anim.start();
-    return () => anim.stop();
-  }, [isStreaming, pulse]);
-
-  const toggle = () => {
-    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-    setExpanded((v) => !v);
-  };
-
-  return (
-    <View style={thinkStyles.wrapper}>
-      <Pressable onPress={toggle} style={thinkStyles.header}>
-        <View style={thinkStyles.headerLeft}>
-          <Animated.View style={{ opacity: isStreaming ? pulse : 1 }}>
-            <Ionicons name="flash" size={13} color={C.gold} />
-          </Animated.View>
-          <Text style={thinkStyles.headerLabel}>
-            {isStreaming ? "Sedang Berpikir..." : "Proses Berpikir"}
-          </Text>
-          {isStreaming && (
-            <View style={thinkStyles.liveChip}>
-              <Text style={thinkStyles.liveChipText}>LIVE</Text>
-            </View>
-          )}
-        </View>
-        <Ionicons
-          name={expanded ? "chevron-up" : "chevron-down"}
-          size={14}
-          color={C.textDim}
-        />
-      </Pressable>
-      {expanded && (
-        <View style={thinkStyles.body}>
-          <ScrollView
-            style={thinkStyles.scrollArea}
-            showsVerticalScrollIndicator={false}
-            nestedScrollEnabled
-          >
-            <Text style={thinkStyles.text}>
-              {text || " "}
-              {isStreaming && <StreamCursor />}
-            </Text>
-          </ScrollView>
-        </View>
-      )}
-    </View>
-  );
-}
-
-// ─── Thinking Process Panel (final — collapsed by default) ────────────────────
-function ThinkingProcess({ thinking }: { thinking: string }) {
-  const [expanded, setExpanded] = useState(false);
-
-  const toggle = () => {
-    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-    setExpanded((v) => !v);
-  };
-
-  return (
-    <View style={thinkStyles.wrapper}>
-      <Pressable onPress={toggle} style={thinkStyles.header}>
-        <View style={thinkStyles.headerLeft}>
-          <Ionicons name="flash" size={13} color={C.gold} />
-          <Text style={thinkStyles.headerLabel}>Proses Berpikir</Text>
-        </View>
-        <Ionicons
-          name={expanded ? "chevron-up" : "chevron-down"}
-          size={14}
-          color={C.textDim}
-        />
-      </Pressable>
-      {expanded && (
-        <View style={thinkStyles.body}>
-          <Text style={thinkStyles.text}>{thinking}</Text>
-        </View>
-      )}
-    </View>
-  );
-}
-
-const thinkStyles = StyleSheet.create({
-  wrapper: {
-    marginBottom: 6,
-    marginLeft: 40,
-    marginRight: 16,
-    borderRadius: 10,
-    overflow: "hidden",
-    borderWidth: 1,
-    borderColor: C.gold + "33",
-    backgroundColor: C.gold + "0A",
-  },
-  header: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-  },
-  headerLeft: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-  },
-  headerLabel: {
-    fontFamily: "Inter_500Medium",
-    fontSize: 12,
-    color: C.gold,
-    letterSpacing: 0.3,
-  },
-  liveChip: {
-    backgroundColor: C.gold,
-    borderRadius: 4,
-    paddingHorizontal: 5,
-    paddingVertical: 1,
-  },
-  liveChipText: {
-    fontFamily: "Inter_700Bold",
-    fontSize: 8,
-    color: C.bg,
-    letterSpacing: 0.5,
-  },
-  body: {
-    paddingHorizontal: 12,
-    paddingBottom: 10,
-    borderTopWidth: 1,
-    borderTopColor: C.gold + "22",
-  },
-  scrollArea: {
-    maxHeight: 180,
-    marginTop: 8,
-  },
-  text: {
-    fontFamily: "Inter_400Regular",
-    fontSize: 12,
-    color: C.textSub,
-    lineHeight: 18,
-  },
-  cursor: {
-    color: C.gold,
-  },
-});
-
-// ─── Thinking Phase Bubble (before thinking tokens start arriving) ─────────────
-function ThinkingPhaseBubble() {
   const pulse = useRef(new Animated.Value(0.5)).current;
 
   useEffect(() => {
+    if (!isLive) return;
     const anim = Animated.loop(
       Animated.sequence([
         Animated.timing(pulse, { toValue: 1, duration: 800, useNativeDriver: true }),
@@ -317,214 +92,248 @@ function ThinkingPhaseBubble() {
     );
     anim.start();
     return () => anim.stop();
-  }, [pulse]);
+  }, [isLive, pulse]);
+
+  const toggle = () => {
+    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+    setExpanded((v) => !v);
+  };
 
   return (
-    <View style={[bubbleStyles.row, bubbleStyles.rowLeft]}>
-      <View style={bubbleStyles.avatarAI}>
-        <Text style={bubbleStyles.avatarText}>AI</Text>
-      </View>
-      <Animated.View style={[thinkPhaseStyles.bubble, { opacity: pulse }]}>
-        <Ionicons name="flash" size={12} color={C.gold} />
-        <Text style={thinkPhaseStyles.text}>Sedang menganalisis...</Text>
-      </Animated.View>
+    <View style={thinkStyles.wrapper}>
+      <Pressable onPress={toggle} style={thinkStyles.header}>
+        <View style={thinkStyles.left}>
+          <Animated.View style={{ opacity: isLive ? pulse : 0.7 }}>
+            <View style={thinkStyles.dot} />
+          </Animated.View>
+          <Text style={thinkStyles.label}>
+            {isLive ? "Sedang berpikir..." : "Lihat proses berpikir"}
+          </Text>
+        </View>
+        <Ionicons
+          name={expanded ? "chevron-up-outline" : "chevron-down-outline"}
+          size={14}
+          color={C.textDim}
+        />
+      </Pressable>
+      {expanded && (
+        <View style={thinkStyles.body}>
+          <ScrollView
+            style={{ maxHeight: 200 }}
+            showsVerticalScrollIndicator={false}
+            nestedScrollEnabled
+          >
+            <Text style={thinkStyles.text}>
+              {text || " "}
+              {isLive && <BlinkCursor color={C.textDim} />}
+            </Text>
+          </ScrollView>
+        </View>
+      )}
     </View>
   );
 }
 
-const thinkPhaseStyles = StyleSheet.create({
-  bubble: {
+const thinkStyles = StyleSheet.create({
+  wrapper: {
+    marginBottom: 4,
+    borderRadius: 8,
+    overflow: "hidden",
+    backgroundColor: "#141C2B",
+    borderWidth: 1,
+    borderColor: C.border,
+  },
+  header: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 6,
-    backgroundColor: C.gold + "15",
-    borderWidth: 1,
-    borderColor: C.gold + "44",
-    borderRadius: 14,
+    justifyContent: "space-between",
     paddingHorizontal: 12,
-    paddingVertical: 8,
+    paddingVertical: 9,
+  },
+  left: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  dot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: C.gold,
+  },
+  label: {
+    fontFamily: "Inter_400Regular",
+    fontSize: 12,
+    color: C.textSub,
+    letterSpacing: 0.2,
+  },
+  body: {
+    paddingHorizontal: 12,
+    paddingBottom: 12,
+    borderTopWidth: 1,
+    borderTopColor: C.border,
+    paddingTop: 10,
   },
   text: {
     fontFamily: "Inter_400Regular",
-    fontSize: 13,
-    color: C.gold,
-    opacity: 0.9,
+    fontSize: 12,
+    color: C.textDim,
+    lineHeight: 19,
   },
 });
 
-// ─── Message Bubble ────────────────────────────────────────────────────────────
-function MessageBubble({ msg }: { msg: ChatMessage }) {
+// ─── Thinking Phase Indicator ──────────────────────────────────────────────────
+function ThinkingIndicator() {
+  const pulse = useRef(new Animated.Value(0.4)).current;
+  useEffect(() => {
+    const anim = Animated.loop(
+      Animated.sequence([
+        Animated.timing(pulse, { toValue: 1, duration: 700, useNativeDriver: true }),
+        Animated.timing(pulse, { toValue: 0.4, duration: 700, useNativeDriver: true }),
+      ])
+    );
+    anim.start();
+    return () => anim.stop();
+  }, [pulse]);
+
+  return (
+    <View style={indicatorStyles.row}>
+      <Animated.View style={[indicatorStyles.dot, { opacity: pulse }]} />
+      <Animated.View style={[indicatorStyles.dot, { opacity: pulse, marginLeft: 5 }]} />
+      <Animated.View style={[indicatorStyles.dot, { opacity: pulse, marginLeft: 5 }]} />
+    </View>
+  );
+}
+
+const indicatorStyles = StyleSheet.create({
+  row: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingVertical: 10,
+  },
+  dot: {
+    width: 7,
+    height: 7,
+    borderRadius: 3.5,
+    backgroundColor: C.textDim,
+  },
+});
+
+// ─── Message Row ───────────────────────────────────────────────────────────────
+function MessageRow({ msg }: { msg: ChatMessage }) {
   const isUser = msg.role === "user";
 
-  // Initial thinking phase (before any tokens arrive)
   if (msg.thinkingPhase) {
-    return <ThinkingPhaseBubble />;
-  }
-
-  // Streaming thinking phase — show the live thinking bubble + optional empty response area
-  if (msg.isThinkingStreaming) {
     return (
-      <View>
-        <LiveThinkingBubble
-          text={msg.streamingThinking ?? ""}
-          isStreaming={true}
-        />
+      <View style={rowStyles.aiRow}>
+        <ThinkingIndicator />
       </View>
     );
   }
 
-  // Typing dots while waiting for first chunk (thinking done, response loading)
+  if (msg.isThinkingStreaming) {
+    return (
+      <View style={rowStyles.aiRow}>
+        <ThinkingPanel text={msg.streamingThinking ?? ""} isLive={true} />
+      </View>
+    );
+  }
+
   if (msg.streaming && !msg.content) {
     return (
-      <View style={[bubbleStyles.row, bubbleStyles.rowLeft]}>
-        <View style={bubbleStyles.avatarAI}>
-          <Text style={bubbleStyles.avatarText}>AI</Text>
-        </View>
-        <View style={[bubbleStyles.bubble, bubbleStyles.bubbleAI]}>
-          <TypingDots />
+      <View style={rowStyles.aiRow}>
+        <ThinkingIndicator />
+      </View>
+    );
+  }
+
+  if (isUser) {
+    return (
+      <View style={rowStyles.userRow}>
+        <View style={rowStyles.userBubble}>
+          <Text style={rowStyles.userText}>{msg.content}</Text>
         </View>
       </View>
     );
   }
 
   return (
-    <View>
-      {!isUser && msg.thinking && (
-        <ThinkingProcess thinking={msg.thinking} />
+    <View style={rowStyles.aiRow}>
+      {msg.thinking && (
+        <ThinkingPanel text={msg.thinking} isLive={false} />
       )}
-      {!isUser && msg.streamingThinking && !msg.thinking && (
-        <LiveThinkingBubble
-          text={msg.streamingThinking}
-          isStreaming={false}
-        />
+      {msg.streamingThinking && !msg.thinking && (
+        <ThinkingPanel text={msg.streamingThinking} isLive={false} />
       )}
-      <View style={[bubbleStyles.row, isUser ? bubbleStyles.rowRight : bubbleStyles.rowLeft]}>
-        {!isUser && (
-          <View style={bubbleStyles.avatarAI}>
-            <Text style={bubbleStyles.avatarText}>AI</Text>
-          </View>
-        )}
-        <View
-          style={[
-            bubbleStyles.bubble,
-            isUser ? bubbleStyles.bubbleUser : bubbleStyles.bubbleAI,
-          ]}
-        >
-          <Text style={[bubbleStyles.text, isUser ? bubbleStyles.textUser : bubbleStyles.textAI]}>
-            {msg.content}
-            {msg.streaming && <Text style={bubbleStyles.cursor}>▌</Text>}
-          </Text>
-        </View>
-        {isUser && (
-          <View style={bubbleStyles.avatarUser}>
-            <Ionicons name="person" size={14} color={C.bg} />
-          </View>
-        )}
-      </View>
+      <Text style={rowStyles.aiText}>
+        {msg.content}
+        {msg.streaming && <BlinkCursor />}
+      </Text>
     </View>
   );
 }
 
-const bubbleStyles = StyleSheet.create({
-  row: {
-    flexDirection: "row",
+const rowStyles = StyleSheet.create({
+  userRow: {
     alignItems: "flex-end",
-    marginBottom: 12,
-    paddingHorizontal: 12,
-    gap: 8,
+    marginBottom: 20,
+    paddingHorizontal: 16,
   },
-  rowLeft: { justifyContent: "flex-start" },
-  rowRight: { justifyContent: "flex-end" },
-  avatarAI: {
-    width: 32,
-    height: 32,
+  userBubble: {
+    backgroundColor: "#1E2A3D",
     borderRadius: 16,
-    backgroundColor: C.goldBg,
-    borderWidth: 1,
-    borderColor: C.gold,
-    alignItems: "center",
-    justifyContent: "center",
-    flexShrink: 0,
-  },
-  avatarUser: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: C.gold,
-    alignItems: "center",
-    justifyContent: "center",
-    flexShrink: 0,
-  },
-  avatarText: {
-    fontFamily: "Inter_700Bold",
-    fontSize: 10,
-    color: C.gold,
-    letterSpacing: 0.5,
-  },
-  bubble: {
-    maxWidth: "75%",
-    borderRadius: 18,
+    borderBottomRightRadius: 4,
     paddingHorizontal: 14,
     paddingVertical: 10,
-  },
-  bubbleUser: {
-    backgroundColor: C.gold,
-    borderBottomRightRadius: 4,
-  },
-  bubbleAI: {
-    backgroundColor: C.card,
+    maxWidth: "80%",
     borderWidth: 1,
     borderColor: C.border,
-    borderBottomLeftRadius: 4,
   },
-  text: {
-    fontSize: 14,
-    lineHeight: 20,
-  },
-  textUser: {
-    fontFamily: "Inter_500Medium",
-    color: C.bg,
-  },
-  textAI: {
+  userText: {
     fontFamily: "Inter_400Regular",
+    fontSize: 14,
     color: C.text,
+    lineHeight: 21,
   },
-  cursor: {
-    color: C.gold,
-    opacity: 0.8,
+  aiRow: {
+    alignItems: "flex-start",
+    marginBottom: 20,
+    paddingHorizontal: 16,
+  },
+  aiText: {
+    fontFamily: "Inter_400Regular",
+    fontSize: 14,
+    color: C.text,
+    lineHeight: 22,
   },
 });
 
 // ─── Empty State ───────────────────────────────────────────────────────────────
-function EmptyState({ onHintPress }: { onHintPress: (text: string) => void }) {
+const HINTS = [
+  "Bagaimana kondisi market sekarang?",
+  "Jelaskan sinyal aktif saat ini",
+  "Apa itu Golden Zone di Fibonacci?",
+];
+
+function EmptyState({ onHint }: { onHint: (t: string) => void }) {
   return (
-    <View style={emptyStyles.container}>
-      <View style={emptyStyles.iconWrap}>
-        <Ionicons name="sparkles" size={36} color={C.gold} />
+    <View style={emptyStyles.wrap}>
+      <View style={emptyStyles.icon}>
+        <Ionicons name="sparkles-outline" size={28} color={C.gold} />
       </View>
       <Text style={emptyStyles.title}>LIBARTIN AI</Text>
       <Text style={emptyStyles.sub}>
-        Tanya kondisi pasar, analisis sinyal, atau apapun tentang trading XAUUSD
+        Analisis pasar, sinyal, dan strategi XAUUSD — tanya apapun.
       </Text>
-      <View style={emptyStyles.thinkingBadge}>
-        <Ionicons name="flash" size={11} color={C.gold} />
-        <Text style={emptyStyles.thinkingBadgeText}>Mode Berpikir Aktif</Text>
-      </View>
       <View style={emptyStyles.hints}>
-        {[
-          "Bagaimana kondisi market sekarang?",
-          "Jelaskan sinyal SELL saat ini",
-          "Apa itu Pin Bar dan kapan valid?",
-        ].map((hint) => (
+        {HINTS.map((h) => (
           <Pressable
-            key={hint}
-            style={({ pressed }) => [
-              emptyStyles.hintChip,
-              pressed && emptyStyles.hintChipPressed,
-            ]}
-            onPress={() => onHintPress(hint)}
+            key={h}
+            style={({ pressed }) => [emptyStyles.chip, pressed && emptyStyles.chipPressed]}
+            onPress={() => onHint(h)}
           >
-            <Text style={emptyStyles.hintText}>{hint}</Text>
+            <Text style={emptyStyles.chipText}>{h}</Text>
+            <Ionicons name="arrow-up-outline" size={13} color={C.textDim} style={{ marginLeft: 4 }} />
           </Pressable>
         ))}
       </View>
@@ -533,28 +342,29 @@ function EmptyState({ onHintPress }: { onHintPress: (text: string) => void }) {
 }
 
 const emptyStyles = StyleSheet.create({
-  container: {
+  wrap: {
     flex: 1,
     alignItems: "center",
     justifyContent: "center",
-    paddingHorizontal: 32,
-    paddingBottom: 60,
+    paddingHorizontal: 28,
+    paddingBottom: 40,
+    gap: 0,
   },
-  iconWrap: {
-    width: 72,
-    height: 72,
-    borderRadius: 36,
+  icon: {
+    width: 56,
+    height: 56,
+    borderRadius: 28,
     backgroundColor: C.goldBg,
     borderWidth: 1,
-    borderColor: C.gold + "44",
+    borderColor: C.gold + "30",
     alignItems: "center",
     justifyContent: "center",
     marginBottom: 16,
   },
   title: {
     fontFamily: "Orbitron_700Bold",
-    fontSize: 18,
-    color: C.gold,
+    fontSize: 16,
+    color: C.text,
     letterSpacing: 2,
     marginBottom: 8,
   },
@@ -564,46 +374,33 @@ const emptyStyles = StyleSheet.create({
     color: C.textSub,
     textAlign: "center",
     lineHeight: 20,
-    marginBottom: 12,
-  },
-  thinkingBadge: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 5,
-    backgroundColor: C.gold + "15",
-    borderWidth: 1,
-    borderColor: C.gold + "33",
-    borderRadius: 20,
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    marginBottom: 20,
-  },
-  thinkingBadgeText: {
-    fontFamily: "Inter_500Medium",
-    fontSize: 11,
-    color: C.gold,
+    marginBottom: 28,
   },
   hints: { gap: 8, alignSelf: "stretch" },
-  hintChip: {
+  chip: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
     backgroundColor: C.surface,
     borderWidth: 1,
     borderColor: C.border,
     borderRadius: 10,
     paddingHorizontal: 14,
-    paddingVertical: 12,
+    paddingVertical: 11,
   },
-  hintChipPressed: {
-    backgroundColor: C.goldBg,
-    borderColor: C.gold + "66",
+  chipPressed: {
+    backgroundColor: "#1A2234",
+    borderColor: C.gold + "44",
   },
-  hintText: {
+  chipText: {
     fontFamily: "Inter_400Regular",
     fontSize: 13,
     color: C.textSub,
+    flex: 1,
   },
 });
 
-// ─── SSE line parser ───────────────────────────────────────────────────────────
+// ─── SSE Parser ────────────────────────────────────────────────────────────────
 interface SSEParserState {
   lineBuffer: string;
   currentEvent: string;
@@ -667,7 +464,7 @@ function parseSSEChunk(
   }
 }
 
-// ─── Main AI Chat Screen ───────────────────────────────────────────────────────
+// ─── Main Screen ───────────────────────────────────────────────────────────────
 export default function AIScreen() {
   const insets = useSafeAreaInsets();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -680,9 +477,28 @@ export default function AIScreen() {
   const inputRef = useRef<TextInput>(null);
 
   const scrollToBottom = useCallback(() => {
-    setTimeout(() => {
-      flatListRef.current?.scrollToEnd({ animated: true });
-    }, 50);
+    setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 50);
+  }, []);
+
+  const clearChat = useCallback(() => {
+    const doIt = () => {
+      setMessages([]);
+      if (BACKEND_URL) {
+        fetch(`${BACKEND_URL}/api/ai/messages`, { method: "DELETE" }).catch(() => {});
+      }
+    };
+    if (Platform.OS === "web") {
+      doIt();
+    } else {
+      Alert.alert(
+        "Hapus Percakapan",
+        "Semua riwayat chat akan dihapus. Lanjutkan?",
+        [
+          { text: "Batal", style: "cancel" },
+          { text: "Hapus", style: "destructive", onPress: doIt },
+        ]
+      );
+    }
   }, []);
 
   const sendMessage = useCallback(async () => {
@@ -697,7 +513,6 @@ export default function AIScreen() {
       content: text,
     };
 
-    // Initial thinking placeholder bubble
     const thinkingBubbleId = `think_${Date.now()}`;
     thinkingIdRef.current = thinkingBubbleId;
     const thinkingMsg: ChatMessage = {
@@ -707,11 +522,9 @@ export default function AIScreen() {
       thinkingPhase: true,
     };
 
-    // ID for the live thinking streaming bubble
     const thinkingStreamId = `tstream_${Date.now() + 1}`;
     thinkingStreamIdRef.current = thinkingStreamId;
 
-    // ID for the final AI response
     const msgId = `a_${Date.now() + 2}`;
     streamingIdRef.current = msgId;
 
@@ -742,161 +555,135 @@ export default function AIScreen() {
       setIsStreaming(false);
     };
 
-    // ── State variables shared across callbacks ────────────────────────────────
-    let fullReceived = "";       // all response content received
-    let displayedLen = 0;        // how many chars shown to user
-    let serverStreamDone = false;
-    let capturedThinking: string | undefined;
-    let messageCreated = false;  // true once thinking bubble replaced with real msg
-    let thinkingStreamCreated = false; // true once live thinking bubble shown
+    let fullReceived = "";
+    let thinkingReceived = "";
+    let thinkingStreamShowing = false;
+    let sseState: SSEParserState = { lineBuffer: "", currentEvent: "" };
+    let xhrDone = false;
 
-    const TICK_MS = 22;
-
-    // ── Response ticker (word by word animation) ───────────────────────────────
-    const runTicker = () => {
-      const advance = () => {
-        if (displayedLen < fullReceived.length) {
-          const remaining = fullReceived.slice(displayedLen);
-          const match = remaining.match(/^(\S+\s*)/);
-          const step = match ? match[1] : remaining[0];
-          displayedLen += step.length;
-          const cur = fullReceived.slice(0, displayedLen);
-
-          setMessages((prev) =>
-            prev.map((m) => (m.id === msgId ? { ...m, content: cur, streaming: true } : m))
-          );
-          scrollToBottom();
-          setTimeout(advance, TICK_MS);
-        } else if (!serverStreamDone) {
-          setTimeout(advance, TICK_MS);
-        } else {
-          streamingIdRef.current = null;
-          setMessages((prev) =>
-            prev.map((m) => (m.id === msgId ? { ...m, streaming: false } : m))
-          );
-          setIsStreaming(false);
-        }
-      };
-      setTimeout(advance, TICK_MS);
-    };
-
-    // ── Transition from thinking → response bubble ─────────────────────────────
-    const initResponseMessage = (thinking?: string) => {
-      if (messageCreated) return;
-      messageCreated = true;
-      setMessages((prev) => {
-        // Remove both the initial thinking placeholder AND the streaming thinking bubble
-        const filtered = prev.filter(
-          (m) => m.id !== thinkingBubbleId && m.id !== thinkingStreamId
-        );
-        return [
-          ...filtered,
-          {
-            id: msgId,
-            role: "assistant" as const,
-            content: "",
-            ...(thinking ? { thinking } : capturedThinking ? { thinking: capturedThinking } : {}),
-            streaming: true,
-          },
-        ];
-      });
-      scrollToBottom();
-      runTicker();
-    };
-
-    // ── Thinking token handler — shows streaming bubble ────────────────────────
-    const handleThinkingToken = (token: string) => {
-      if (!thinkingStreamCreated) {
-        // Replace initial "Sedang menganalisis..." bubble with streaming thinking bubble
-        thinkingStreamCreated = true;
-        setMessages((prev) => {
-          const filtered = prev.filter((m) => m.id !== thinkingBubbleId);
-          return [
-            ...filtered,
-            {
-              id: thinkingStreamId,
-              role: "assistant" as const,
-              content: "",
-              streamingThinking: token,
-              isThinkingStreaming: true,
-            },
-          ];
-        });
-        scrollToBottom();
-      } else {
-        // Append token to the live thinking bubble
-        setMessages((prev) =>
-          prev.map((m) =>
-            m.id === thinkingStreamId
-              ? { ...m, streamingThinking: (m.streamingThinking ?? "") + token }
-              : m
-          )
-        );
-      }
-    };
-
-    // ── Full thinking block received ───────────────────────────────────────────
-    const handleThinkingComplete = (thinking: string) => {
-      capturedThinking = thinking;
-      // Mark thinking as done (stops the streaming indicator)
+    const handleDone = () => {
+      if (xhrDone) return;
+      xhrDone = true;
       setMessages((prev) =>
         prev.map((m) =>
-          m.id === thinkingStreamId
-            ? { ...m, isThinkingStreaming: false, streamingThinking: thinking }
+          m.id === msgId
+            ? {
+                ...m,
+                content: fullReceived || m.content,
+                streaming: false,
+                thinking: thinkingReceived || undefined,
+                streamingThinking: undefined,
+                isThinkingStreaming: false,
+              }
+            : m.id === thinkingStreamId
+            ? { ...m, isThinkingStreaming: false }
             : m
         )
       );
+      setMessages((prev) =>
+        prev.filter((m) => m.id !== thinkingBubbleId && m.id !== thinkingStreamId)
+      );
+      streamingIdRef.current = null;
+      thinkingStreamIdRef.current = null;
+      setIsStreaming(false);
     };
-
-    // ── Content chunk received ─────────────────────────────────────────────────
-    const handleChunk = (chunk: string) => {
-      if (!messageCreated) initResponseMessage(capturedThinking);
-      fullReceived += chunk;
-    };
-
-    // ── Stream done ────────────────────────────────────────────────────────────
-    const handleDone = () => {
-      serverStreamDone = true;
-      if (!messageCreated) initResponseMessage(capturedThinking);
-    };
-
-    // ── XHR streaming — reads SSE incrementally via onprogress ────────────────
-    // XHR works on both web and React Native with progressive response reading.
-    const sseState: SSEParserState = { lineBuffer: "", currentEvent: "" };
-    let xhrProcessedLen = 0;
-    let xhrDone = false;
 
     const xhr = new XMLHttpRequest();
     xhr.open("POST", `${BACKEND_URL}/api/ai/stream`, true);
     xhr.setRequestHeader("Content-Type", "application/json");
-    xhr.timeout = 90000;
+    xhr.setRequestHeader("Accept", "text/event-stream");
+    xhr.timeout = 120_000;
+
+    let lastProcessedLength = 0;
 
     xhr.onprogress = () => {
-      if (xhrDone) return;
-      const newChunk = xhr.responseText.slice(xhrProcessedLen);
-      xhrProcessedLen = xhr.responseText.length;
-      if (!newChunk) return;
+      const newData = xhr.responseText.slice(lastProcessedLength);
+      lastProcessedLength = xhr.responseText.length;
+      if (!newData) return;
 
-      parseSSEChunk(newChunk, sseState, {
-        onThinkingToken: handleThinkingToken,
-        onThinking: handleThinkingComplete,
-        onChunk: handleChunk,
+      parseSSEChunk(newData, sseState, {
+        onThinkingToken: (token) => {
+          thinkingReceived += token;
+
+          if (!thinkingStreamShowing) {
+            thinkingStreamShowing = true;
+            setMessages((prev) =>
+              prev.filter((m) => m.id !== thinkingBubbleId)
+            );
+            setMessages((prev) => [
+              ...prev,
+              {
+                id: thinkingStreamId,
+                role: "assistant",
+                content: "",
+                streamingThinking: token,
+                isThinkingStreaming: true,
+              },
+            ]);
+          } else {
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === thinkingStreamId
+                  ? { ...m, streamingThinking: thinkingReceived }
+                  : m
+              )
+            );
+          }
+          scrollToBottom();
+        },
+
+        onThinking: (thinking) => {
+          thinkingReceived = thinking;
+          setMessages((prev) =>
+            prev.filter((m) => m.id !== thinkingBubbleId && m.id !== thinkingStreamId)
+          );
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: msgId,
+              role: "assistant",
+              content: "",
+              thinking,
+              streaming: true,
+            },
+          ]);
+          scrollToBottom();
+        },
+
+        onChunk: (chunk) => {
+          fullReceived += chunk;
+
+          const existingMsg = messages.find((m) => m.id === msgId);
+          if (!existingMsg) {
+            setMessages((prev) =>
+              prev.filter((m) => m.id !== thinkingBubbleId && m.id !== thinkingStreamId)
+            );
+            setMessages((prev) => [
+              ...prev,
+              { id: msgId, role: "assistant", content: fullReceived, streaming: true },
+            ]);
+          } else {
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === msgId ? { ...m, content: fullReceived } : m
+              )
+            );
+          }
+          scrollToBottom();
+        },
+
         onError: showError,
-        onDone: () => { /* handled in onload */ },
+        onDone: () => {},
       });
     };
 
     xhr.onload = () => {
-      if (xhrDone) return;
-      xhrDone = true;
-
-      // Process any remaining data
-      const remaining = xhr.responseText.slice(xhrProcessedLen);
-      if (remaining) {
-        parseSSEChunk(remaining, sseState, {
-          onThinkingToken: handleThinkingToken,
-          onThinking: handleThinkingComplete,
-          onChunk: handleChunk,
+      const newData = xhr.responseText.slice(lastProcessedLength);
+      if (newData) {
+        parseSSEChunk(newData, sseState, {
+          onThinkingToken: (token) => { thinkingReceived += token; },
+          onThinking: (thinking) => { thinkingReceived = thinking; },
+          onChunk: (chunk) => { fullReceived += chunk; },
           onError: showError,
           onDone: () => {},
         });
@@ -932,16 +719,7 @@ export default function AIScreen() {
     xhr.send(JSON.stringify({ message: text }));
   }, [input, isStreaming, scrollToBottom]);
 
-  const handleKeyPress = useCallback(
-    (e: { nativeEvent: { key: string } }) => {
-      if (Platform.OS === "web" && e.nativeEvent.key === "Enter") {
-        sendMessage();
-      }
-    },
-    [sendMessage]
-  );
-
-  const handleHintPress = useCallback((hint: string) => {
+  const handleHint = useCallback((hint: string) => {
     setInput(hint);
     setTimeout(() => inputRef.current?.focus(), 100);
   }, []);
@@ -949,55 +727,61 @@ export default function AIScreen() {
   const tabBarHeight = Platform.OS === "web" ? 84 : 60;
 
   return (
-    <View style={[styles.root, { paddingTop: insets.top, paddingBottom: tabBarHeight + insets.bottom }]}>
-      <View style={styles.header}>
-        <View style={styles.headerLeft}>
-          <View style={styles.headerDot} />
-          <View>
-            <Text style={styles.headerTitle}>LIBARTIN AI</Text>
-            <Text style={styles.headerByline}>by Dzeck X Wakassim</Text>
+    <View style={[S.root, { paddingTop: insets.top, paddingBottom: tabBarHeight + insets.bottom }]}>
+
+      {/* Header */}
+      <View style={S.header}>
+        <View style={S.headerCenter}>
+          <Text style={S.headerTitle}>LIBARTIN AI</Text>
+          <View style={S.thinkingBadge}>
+            <View style={S.thinkingDot} />
+            <Text style={S.thinkingLabel}>Thinking</Text>
           </View>
         </View>
-        <View style={styles.headerRight}>
-          <Ionicons name="flash" size={11} color={C.gold} />
-          <Text style={styles.headerSub}>Thinking Mode</Text>
-        </View>
+        {messages.length > 0 && (
+          <Pressable onPress={clearChat} style={S.clearBtn} hitSlop={12}>
+            <Ionicons name="trash-outline" size={18} color={C.textDim} />
+          </Pressable>
+        )}
       </View>
 
-      <View style={styles.flex}>
+      {/* Divider */}
+      <View style={S.divider} />
+
+      {/* Messages */}
+      <View style={S.flex}>
         {messages.length === 0 ? (
-          <EmptyState onHintPress={handleHintPress} />
+          <EmptyState onHint={handleHint} />
         ) : (
           <FlatList
             ref={flatListRef}
             data={messages}
             keyExtractor={(m) => m.id}
-            renderItem={({ item }) => <MessageBubble msg={item} />}
-            contentContainerStyle={styles.listContent}
+            renderItem={({ item }) => <MessageRow msg={item} />}
+            contentContainerStyle={S.listContent}
             onContentSizeChange={scrollToBottom}
             showsVerticalScrollIndicator={false}
             keyboardShouldPersistTaps="handled"
-            style={styles.flex}
+            style={S.flex}
           />
         )}
       </View>
 
+      {/* Input Bar */}
       <KeyboardAvoidingView
         behavior={Platform.OS === "ios" ? "padding" : Platform.OS === "web" ? undefined : "height"}
-        keyboardVerticalOffset={Platform.OS === "ios" ? 0 : 0}
       >
-        <View style={styles.inputBar}>
-          <View style={styles.inputRow}>
+        <View style={S.inputBar}>
+          <View style={S.inputRow}>
             <TextInput
               ref={inputRef}
-              style={styles.input}
+              style={S.input}
               value={input}
               onChangeText={setInput}
               placeholder="Tanya tentang XAUUSD..."
               placeholderTextColor={C.textDim}
               multiline
               maxLength={500}
-              onKeyPress={handleKeyPress}
               onSubmitEditing={sendMessage}
               editable={!isStreaming}
               returnKeyType="send"
@@ -1006,103 +790,119 @@ export default function AIScreen() {
               textAlignVertical="center"
             />
             <Pressable
-              style={[styles.sendBtn, (!input.trim() || isStreaming) && styles.sendBtnDisabled]}
+              style={[S.sendBtn, (!input.trim() || isStreaming) && S.sendBtnOff]}
               onPress={sendMessage}
               disabled={!input.trim() || isStreaming}
             >
               {isStreaming ? (
-                <ActivityIndicator size="small" color={C.bg} />
+                <ActivityIndicator size="small" color={C.textDim} />
               ) : (
-                <Ionicons name="send" size={18} color={C.bg} />
+                <Ionicons
+                  name="arrow-up"
+                  size={18}
+                  color={input.trim() ? C.bg : C.textDim}
+                />
               )}
             </Pressable>
           </View>
+          <Text style={S.inputFooter}>XAUUSD · Fibonacci Scalping Strategy</Text>
         </View>
       </KeyboardAvoidingView>
     </View>
   );
 }
 
-const styles = StyleSheet.create({
+const S = StyleSheet.create({
   root: {
     flex: 1,
     backgroundColor: C.bg,
   },
   flex: { flex: 1 },
+
+  // Header
   header: {
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "space-between",
+    justifyContent: "center",
     paddingHorizontal: 16,
-    paddingVertical: 14,
-    borderBottomWidth: 1,
-    borderBottomColor: C.border,
-    backgroundColor: C.surface,
+    paddingVertical: 13,
+    position: "relative",
   },
-  headerLeft: {
+  headerCenter: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 8,
-  },
-  headerRight: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 4,
-    backgroundColor: C.gold + "15",
-    borderWidth: 1,
-    borderColor: C.gold + "33",
-    borderRadius: 12,
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-  },
-  headerDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    backgroundColor: C.gold,
+    gap: 10,
   },
   headerTitle: {
     fontFamily: "Orbitron_700Bold",
-    fontSize: 15,
-    color: C.gold,
+    fontSize: 14,
+    color: C.text,
     letterSpacing: 2,
   },
-  headerByline: {
+  thinkingBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    backgroundColor: C.surface,
+    borderWidth: 1,
+    borderColor: C.border,
+    borderRadius: 20,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+  },
+  thinkingDot: {
+    width: 5,
+    height: 5,
+    borderRadius: 2.5,
+    backgroundColor: C.gold,
+  },
+  thinkingLabel: {
     fontFamily: "Inter_400Regular",
-    fontSize: 9,
-    color: C.textDim,
-    letterSpacing: 0.5,
-    marginTop: 1,
+    fontSize: 10,
+    color: C.textSub,
+    letterSpacing: 0.3,
   },
-  headerSub: {
-    fontFamily: "Inter_500Medium",
-    fontSize: 11,
-    color: C.gold,
+  clearBtn: {
+    position: "absolute",
+    right: 16,
+    top: 0,
+    bottom: 0,
+    justifyContent: "center",
+    padding: 4,
   },
+
+  divider: {
+    height: 1,
+    backgroundColor: C.border,
+  },
+
+  // List
   listContent: {
-    paddingTop: 16,
+    paddingTop: 20,
     paddingBottom: 8,
   },
+
+  // Input
   inputBar: {
-    backgroundColor: C.surface,
+    paddingTop: 10,
+    paddingHorizontal: 14,
+    paddingBottom: 8,
     borderTopWidth: 1,
     borderTopColor: C.border,
-    paddingTop: 10,
-    paddingHorizontal: 12,
-    paddingBottom: 8,
+    backgroundColor: C.bg,
   },
   inputRow: {
     flexDirection: "row",
     alignItems: "flex-end",
-    gap: 10,
+    gap: 8,
   },
   input: {
     flex: 1,
-    backgroundColor: C.card,
+    backgroundColor: C.surface,
     borderWidth: 1,
     borderColor: C.border,
-    borderRadius: 22,
-    paddingHorizontal: 16,
+    borderRadius: 12,
+    paddingHorizontal: 14,
     paddingTop: 10,
     paddingBottom: 10,
     fontFamily: "Inter_400Regular",
@@ -1112,15 +912,25 @@ const styles = StyleSheet.create({
     minHeight: 44,
   },
   sendBtn: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
+    width: 40,
+    height: 40,
+    borderRadius: 10,
     backgroundColor: C.gold,
     alignItems: "center",
     justifyContent: "center",
     flexShrink: 0,
   },
-  sendBtnDisabled: {
-    opacity: 0.4,
+  sendBtnOff: {
+    backgroundColor: C.surface,
+    borderWidth: 1,
+    borderColor: C.border,
+  },
+  inputFooter: {
+    fontFamily: "Inter_400Regular",
+    fontSize: 10,
+    color: C.textDim,
+    textAlign: "center",
+    marginTop: 6,
+    letterSpacing: 0.3,
   },
 });

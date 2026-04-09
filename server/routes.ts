@@ -135,6 +135,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
     res.json({ messages: aiService.getMessages(limit), ready: aiService.isReady() });
   });
 
+  // DELETE /api/ai/messages — Clear all AI chat history (conversation + display)
+  app.delete("/api/ai/messages", (_req: Request, res: Response) => {
+    aiService.clearMessages();
+    res.json({ success: true });
+  });
+
   // POST /api/ai/chat — User sends a question, AI processes in background
   app.post("/api/ai/chat", (req: Request, res: Response) => {
     const { message } = req.body as { message?: string };

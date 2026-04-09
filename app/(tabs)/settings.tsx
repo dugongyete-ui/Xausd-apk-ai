@@ -223,7 +223,7 @@ export default function SettingsScreen() {
             />
             <StrategyRule
               title="Perlindungan"
-              detail="3 loss berturut = cooldown 4 jam · 1 sinyal aktif per arah · Expiry sinyal 5 jam"
+              detail="Sinyal unlimited tanpa cooldown · 1 sinyal aktif per arah · Expiry sinyal 5 jam"
               isLast
             />
           </View>

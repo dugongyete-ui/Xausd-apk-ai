@@ -116,7 +116,7 @@ SISTEM PERLINDUNGAN DAN FILTER:
 1. Session filter: Sinyal hanya aktif saat London (07:00-16:00 UTC) atau New York (13:00-22:00 UTC). Di luar sesi ini sinyal ditandai "low_confidence".
 2. Spike zone: Entry TIDAK diambil dalam 30 menit pertama London Open (07:00-07:30 UTC) dan NY Open (13:00-13:30 UTC) — zona stop hunt / spike tinggi.
 3. Max 1 sinyal per arah per anchor Fibonacci — tidak ada sinyal duplikat.
-4. Cooldown: Setelah 3 consecutive loss (HANYA SL hit, bukan expired), sistem masuk cooldown 4 jam, tidak buka sinyal baru. Sinyal EXPIRED tidak dihitung sebagai loss — expired hanya berarti konfirmasi tidak datang dalam 5 jam.
+4. Tidak ada cooldown atau batas sinyal — sistem mencari setup valid terus-menerus tanpa jeda paksa, 24 jam sehari. EXPIRED hanya berarti setup tidak terkonfirmasi dalam 5 jam, bukan loss.
 5. Expiry: Sinyal yang belum resolved dalam 5 jam otomatis ditandai EXPIRED.
 6. Lot size: Otomatis dihitung berdasarkan risiko 1% dari saldo $10.000.
 
@@ -289,14 +289,6 @@ function buildMarketContext(snapshot: MarketStateSnapshot): string {
     return "Di luar sesi aktif (Asia/weekend) — sinyal low_confidence";
   })();
 
-  const cooldownStatus = (() => {
-    if (snapshot.cooldownUntil && snapshot.cooldownUntil > Date.now()) {
-      const minsLeft = Math.ceil((snapshot.cooldownUntil - Date.now()) / 60000);
-      return `AKTIF — cooldown ${minsLeft} menit lagi (${snapshot.consecutiveLosses} consecutive loss)`;
-    }
-    return `Tidak aktif (consecutive loss: ${snapshot.consecutiveLosses}/3)`;
-  })();
-
   const lines: string[] = [
     `[DATA PASAR REAL-TIME — LIBARTIN]`,
     `Waktu: ${toWIBString(new Date())}`,
@@ -320,7 +312,7 @@ function buildMarketContext(snapshot: MarketStateSnapshot): string {
     `Harga di Golden Zone (61.8-78.6%): ${snapshot.inZone ? "YA — harga dalam zona entry" : "TIDAK"}`,
     ``,
     `[SISTEM PERLINDUNGAN]`,
-    `Cooldown Loss: ${cooldownStatus}`,
+    `Sinyal: UNLIMITED — tidak ada cooldown, sistem mencari setup 24/7`,
   ];
 
   const stats = snapshot.signalStats;

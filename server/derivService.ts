@@ -140,8 +140,6 @@ export interface MarketStateSnapshot {
   connectionStatus: "connecting" | "connected" | "disconnected";
   marketOpen: boolean;
   isActiveSession: boolean;
-  consecutiveLosses: number;
-  cooldownUntil: number | null;
   lastUpdated: string;
   m15CandleCount: number;
   m5CandleCount: number;
@@ -160,8 +158,6 @@ const EMA50_PERIOD = 50;
 const ATR_PERIOD = 14;
 const M5_ATR_MIN_RATIO = 0.5;
 const SIGNAL_EXPIRY_MS = 5 * 60 * 60 * 1000;   // Masalah 1d: 5 jam expiry
-const MAX_DAILY_LOSS = 3;                         // Masalah 1e: maks 3 consecutive loss
-const COOLDOWN_MS    = 4 * 60 * 60 * 1000;       // Masalah 1e: 4 jam cooldown
 
 // ─── Analysis Helpers (mirrors TradingContext logic) ──────────────────────────
 function calcEMA(closes: number[], period: number): number[] {
@@ -460,10 +456,6 @@ class DerivService {
   private marketCheckTimer: ReturnType<typeof setInterval> | null = null;
   private reconnectAttempts = 0;               // Masalah 5d: untuk exponential backoff
 
-  // Masalah 1e: MAX_DAILY_LOSS tracking
-  private consecutiveLosses = 0;
-  private cooldownUntil: number | null = null;
-
   // SSE clients untuk real-time push sinyal (Masalah 4b)
   private sseClients: Set<import("express").Response> = new Set();
 
@@ -560,15 +552,13 @@ class DerivService {
     console.log(`[DerivService] Starting background service... mode=${mode}, pushTokens=${this.pushTokens.size}`);
     this.connect();
 
+    // Selalu cek koneksi tanpa memperhatikan status market — sistem mencari sinyal 24/7
     this.marketCheckTimer = setInterval(() => {
-      const isOpen = forexMarketOpen();
-      if (isOpen && !this.derivMarketClosed) {
-        const state = this.ws?.readyState;
-        if (!this.ws || state === WebSocket.CLOSED || state === WebSocket.CLOSING) {
-          if (!this.reconnectTimer) {
-            this.derivMarketClosed = false;
-            this.connect();
-          }
+      const state = this.ws?.readyState;
+      if (!this.ws || state === WebSocket.CLOSED || state === WebSocket.CLOSING) {
+        if (!this.reconnectTimer) {
+          this.derivMarketClosed = false;
+          this.connect();
         }
       }
     }, 30_000);
@@ -581,11 +571,9 @@ class DerivService {
   }
 
   private connect() {
-    if (!forexMarketOpen()) {
-      console.log("[DerivService] Market closed, skipping connect");
-      return;
+    if (this.derivMarketClosed) {
+      this.derivMarketClosed = false;
     }
-    if (this.derivMarketClosed) return;
     if (this.ws) { try { this.ws.close(); } catch {} this.ws = null; }
 
     console.log("[DerivService] Connecting to Deriv WebSocket...");
@@ -841,18 +829,10 @@ class DerivService {
         changed = true;
         const hitPrice = isBull ? candleLow : candleHigh;
         if (isBreakevenStop) {
-          this.consecutiveLosses = 0;
-          this.cooldownUntil = null;
           console.log(`[DerivService] Signal ${sig.id} hit breakeven SL → WIN (TP1 locked) @ low/high ${hitPrice}`);
           this.triggerOutcomeCommentary(sig.id, "win");
         } else {
-          // Masalah 1e: hitung consecutive loss
-          this.consecutiveLosses++;
-          if (this.consecutiveLosses >= MAX_DAILY_LOSS && !this.cooldownUntil) {
-            this.cooldownUntil = Date.now() + COOLDOWN_MS;
-            console.log(`[DerivService] MAX_DAILY_LOSS reached (${MAX_DAILY_LOSS}) — 4h cooldown aktif`);
-          }
-          console.log(`[DerivService] Signal ${sig.id} hit SL → LOSS @ low/high ${hitPrice} (consecutive: ${this.consecutiveLosses})`);
+          console.log(`[DerivService] Signal ${sig.id} hit SL → LOSS @ low/high ${hitPrice}`);
           this.triggerOutcomeCommentary(sig.id, "loss");
         }
         if (isBull) { this.activeBuySignalId = null; this.bullAnchorSignaled = null; }
@@ -860,8 +840,6 @@ class DerivService {
       } else if (tp2Hit) {
         sig.outcome = "win";
         changed = true;
-        this.consecutiveLosses = 0;
-        this.cooldownUntil = null;
         const hitPrice = isBull ? candleHigh : candleLow;
         console.log(`[DerivService] Signal ${sig.id} hit TP2 → WIN @ high/low ${hitPrice}`);
         this.triggerOutcomeCommentary(sig.id, "win");
@@ -1031,20 +1009,7 @@ class DerivService {
       return null;
     }
 
-    // Masalah 1e: cooldown setelah MAX_DAILY_LOSS consecutive losses
-    if (this.cooldownUntil && Date.now() < this.cooldownUntil) {
-      const minsLeft = Math.round((this.cooldownUntil - Date.now()) / 60000);
-      if (minsLeft % 60 === 0) {
-        console.log(`[DerivService] In cooldown — ${minsLeft} menit tersisa`);
-      }
-      return null;
-    } else if (this.cooldownUntil && Date.now() >= this.cooldownUntil) {
-      this.cooldownUntil = null;
-      this.consecutiveLosses = 0;
-      console.log("[DerivService] Cooldown selesai — sinyal kembali aktif");
-    }
-
-    // ── Task 1: Cooldown — max 1 active signal per direction ──────────────────
+    // ── Task 1: max 1 active signal per direction ─────────────────────────────
     // Block new signal if same anchorEpoch already produced an unresolved signal
     // or if a signal for this direction is still pending (active).
     const anchorSignaled = trend === "Bullish" ? this.bullAnchorSignaled : this.bearAnchorSignaled;
@@ -1453,8 +1418,6 @@ class DerivService {
       connectionStatus: this.connectionStatus,
       marketOpen: forexMarketOpen(),
       isActiveSession: isActiveSession(Date.now()),
-      consecutiveLosses: this.consecutiveLosses,
-      cooldownUntil: this.cooldownUntil,
       lastUpdated: new Date().toUTCString(),
       m15CandleCount: this.m15Candles.length,
       m5CandleCount: this.m5Candles.length,

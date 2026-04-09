@@ -1,11 +1,40 @@
 # LIBARTIN Backtest — Prompt Perbaikan Kedepan
 
-File ini berisi prompt siap-pakai yang bisa kamu gunakan untuk meminta perbaikan lanjutan
-pada `scripts/backtest.ts` dan strategi XAUUSD secara keseluruhan.
+Kirim prompt di bawah satu per satu ke chat AI secara berurutan.
+Tunggu setiap perbaikan selesai dan ditest sebelum lanjut ke prompt berikutnya.
 
 ---
 
-## PROMPT 1 — Perbesar Sampel & Validasi Statistik
+## PROMPT 1 — Perbaikan Kualitas Sinyal
+
+```
+Beberapa sinyal di backtest memiliki RR1 < 1:1 (TP1 lebih dekat dari SL),
+yang tidak ideal secara manajemen risiko. Bantu perbaiki strategi di scripts/backtest.ts
+dan server/derivService.ts:
+
+1. Revisi formula TP1: TP1 seharusnya minimal 1:1 RR dari entry.
+   - Saat ini: tp1 = Math.min/max(fibLevel, atrLevel) → bisa lebih kecil dari 1R
+   - Perbaiki: tp1 = entryPrice + slDistance * 1.0 (bullish) / entryPrice - slDistance * 1.0 (bearish)
+   - Pastikan TP1 tidak melewati TP2
+
+2. Tambah filter "zone confluence": sinyal lebih valid jika entry zone (61.8%–78.6% fib)
+   juga bertepatan dengan:
+   - Round number (harga mendekati angka bulat ±2 poin, mis. 4700, 4750, 4800)
+   - Previous swing high/low dalam radius 3 poin
+   - Jika confluence terdeteksi, tandai sinyal dengan tag "confluence: true"
+
+3. Tambah filter body candle M5:
+   - Jika body candle M5 < 30% dari full range (high-low), abaikan sinyal
+   - Ini filter candle doji/indecision yang tidak punya momentum
+
+4. Terapkan semua perubahan di KEDUA file: scripts/backtest.ts DAN server/derivService.ts
+
+Target files: scripts/backtest.ts, server/derivService.ts
+```
+
+---
+
+## PROMPT 2 — Perbesar Sampel & Validasi Statistik
 
 ```
 Backtest saat ini hanya menggunakan 1 hari data (default). Bantu perbaiki scripts/backtest.ts
@@ -30,60 +59,7 @@ Target file: scripts/backtest.ts
 
 ---
 
-## PROMPT 2 — Simpan Hasil ke JSON & Analisis Lebih Dalam
-
-```
-Tambahkan fitur export hasil backtest ke file JSON di scripts/backtest.ts:
-
-1. Setelah simulasi selesai, simpan semua sinyal ke file:
-   scripts/results/backtest_YYYYMMDD_HHmm.json
-   Format: { metadata: { period, days, totalSignals, winrate, ev }, signals: [...] }
-
-2. Buat script terpisah scripts/analyze.ts yang membaca file JSON hasil backtest dan menampilkan:
-   - Distribusi RR2 per sinyal (histogram sederhana di terminal)
-   - Streaks: win streak terpanjang, loss streak terpanjang
-   - Performa per hari dalam seminggu (Senin, Selasa, dst.)
-   - Performa per jam UTC (08:00, 09:00, ... 21:00)
-   - Monte Carlo simulasi 1000x dengan sampel acak untuk estimasi drawdown
-
-3. Tambah opsi --save ke backtest CLI:
-   npx tsx scripts/backtest.ts --days=7 --save
-
-Target files: scripts/backtest.ts, scripts/analyze.ts
-```
-
----
-
-## PROMPT 3 — Perbaikan Kualitas Sinyal
-
-```
-Beberapa sinyal di backtest memiliki RR1 < 1:1 (TP1 lebih dekat dari SL),
-yang tidak ideal secara manajemen risiko. Bantu perbaiki strategi di scripts/backtest.ts
-dan server/derivService.ts:
-
-1. Revisi formula TP1: TP1 seharusnya minimal 1:1 RR dari entry.
-   - Saat ini: tp1 = Math.min/max(fibLevel, atrLevel) → bisa lebih kecil dari 1R
-   - Perbaiki: tp1 = entryPrice + slDistance * 1.0 (bullish) / entryPrice - slDistance * 1.0 (bearish)
-   - Pastikan TP1 tidak melewati TP2
-
-2. Tambah filter "zone confluence": sinyal lebih valid jika entry zone (61.8%–78.6% fib)
-   juga bertepatan dengan:
-   - Round number (harga mendekati angka bulat ±2 poin, mis. 4700, 4750, 4800)
-   - Previous swing high/low dalam radius 3 poin
-   - Jika confluence terdeteksi, tandai sinyal dengan tag "confluence: true"
-
-3. Tambah filter volume imbalance M5:
-   - Jika body candle M5 < 30% dari full range (high-low), abaikan sinyal
-   - Ini filter candle doji/indecision yang tidak punya momentum
-
-4. Terapkan semua perubahan di KEDUA file: scripts/backtest.ts DAN server/derivService.ts
-
-Target files: scripts/backtest.ts, server/derivService.ts
-```
-
----
-
-## PROMPT 4 — Deteksi Regime Pasar (Trending vs Sideways)
+## PROMPT 3 — Deteksi Regime Pasar (Trending vs Sideways)
 
 ```
 Strategi Fib retracement bekerja lebih baik di pasar yang trending.
@@ -111,7 +87,31 @@ Target files: scripts/backtest.ts, server/derivService.ts, TradingContext.tsx
 
 ---
 
-## PROMPT 5 — Walk-Forward Validation
+## PROMPT 4 — Simpan Hasil ke JSON & Analisis Mendalam
+
+```
+Tambahkan fitur export hasil backtest ke file JSON di scripts/backtest.ts:
+
+1. Setelah simulasi selesai, simpan semua sinyal ke file:
+   scripts/results/backtest_YYYYMMDD_HHmm.json
+   Format: { metadata: { period, days, totalSignals, winrate, ev }, signals: [...] }
+
+2. Buat script terpisah scripts/analyze.ts yang membaca file JSON hasil backtest dan menampilkan:
+   - Distribusi RR2 per sinyal (histogram sederhana di terminal)
+   - Streaks: win streak terpanjang, loss streak terpanjang
+   - Performa per hari dalam seminggu (Senin, Selasa, dst.)
+   - Performa per jam UTC (08:00, 09:00, ... 21:00)
+   - Monte Carlo simulasi 1000x dengan sampel acak untuk estimasi drawdown
+
+3. Tambah opsi --save ke backtest CLI:
+   npx tsx scripts/backtest.ts --days=7 --save
+
+Target files: scripts/backtest.ts, scripts/analyze.ts
+```
+
+---
+
+## PROMPT 5 — Walk-Forward Validation (Anti-Overfitting)
 
 ```
 Backtest biasa rentan overfitting. Bantu tambahkan walk-forward validation
@@ -122,8 +122,8 @@ di scripts/backtest.ts:
 
 2. Cara kerja walk-forward:
    - Bagi 30 hari data menjadi 6 blok @ 5 hari
-   - Untuk setiap blok: gunakan blok sebelumnya sebagai "in-sample" (tidak ada parameter yang dioptimasi,
-     hanya validasi apakah winrate konsisten), blok saat ini sebagai "out-of-sample"
+   - Untuk setiap blok: gunakan blok sebelumnya sebagai konteks (in-sample),
+     blok saat ini sebagai pengujian (out-of-sample)
    - Tampilkan winrate per blok (blok 1, 2, 3, 4, 5, 6) untuk lihat apakah konsisten atau degradasi
 
 3. Di summary walk-forward, tampilkan:
@@ -132,25 +132,18 @@ di scripts/backtest.ts:
    - Apakah ada degradasi performa dari blok awal ke blok akhir (tanda overfitting)
 
 4. Gunakan parallel WebSocket requests untuk efisiensi fetch data multi-periode:
-   Fetch semua 6 blok M5 data secara bersamaan (Promise.all)
+   Fetch semua blok M5 data secara bersamaan (Promise.all)
 
 Target file: scripts/backtest.ts
 ```
 
 ---
 
-## Cara Pakai Prompt
+## Cara Pakai
 
-Copy salah satu prompt di atas dan tempel ke chat dengan agent.
-Setiap prompt bersifat mandiri dan tidak bergantung satu sama lain,
-kecuali Prompt 5 (Walk-Forward) yang sebaiknya dilakukan setelah Prompt 1 (multi-hari sudah berfungsi).
+1. Copy isi PROMPT 1 (teks di dalam blok kode)
+2. Tempel ke chat AI
+3. Tunggu selesai dan ditest
+4. Lanjut ke PROMPT 2, dst.
 
-## Prioritas yang Disarankan
-
-| Prioritas | Prompt | Alasan |
-|-----------|--------|--------|
-| 1 (Paling Penting) | Prompt 3 — Kualitas Sinyal | Perbaiki RR1 < 1 dan tambah filter confluence |
-| 2 | Prompt 1 — Perbesar Sampel | 1 hari tidak cukup untuk kesimpulan valid |
-| 3 | Prompt 4 — Deteksi Regime | Filter ranging market yang merusak winrate |
-| 4 | Prompt 2 — Export JSON | Untuk analisis lebih dalam |
-| 5 | Prompt 5 — Walk-Forward | Validasi final anti-overfitting |
+Jangan loncat urutan — setiap prompt bergantung pada perbaikan sebelumnya.

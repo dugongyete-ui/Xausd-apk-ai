@@ -127,6 +127,24 @@ Zona entry: Retracement 61.8%-78.6% dari swing turun (harga rebound ke atas dari
 Konfirmasi M5: Candle M5 closed + Pin Bar Rejection bearish (wick atas ≥ 0.8× body) ATAU Engulfing bearish (body ≥ 75% candle sebelumnya + round number/swing confluence).
 SL: Di atas Swing High anchor. TP1 dan TP2: sama seperti BUY, arah terbalik.
 
+JAM TRADING XAUUSD — PENTING:
+XAUUSD (Gold/USD) di Deriv HANYA bisa ditradingkan saat Forex market buka:
+- Buka: Minggu 22:00 UTC (Senin 05:00 WIB)
+- Tutup: Jumat 22:00 UTC (Sabtu 05:00 WIB)
+- Sabtu penuh: TUTUP
+- Minggu sebelum 22:00 UTC: TUTUP
+Saat market tutup, Deriv otomatis memutus koneksi WebSocket — ini NORMAL, bukan error teknis.
+Status "Koneksi Deriv: disconnected" saat market tutup BUKAN masalah koneksi — koneksi akan otomatis pulih saat market buka.
+Data harga tidak tersedia saat market tutup — analisis teknikal tidak bisa dilakukan.
+
+CARA MENJAWAB SAAT MARKET TUTUP:
+Jika data menunjukkan "Status Pasar: TUTUP":
+1. Sampaikan dengan jelas bahwa market XAUUSD sedang tutup (weekend atau di luar jam trading)
+2. Berikan jadwal buka berikutnya berdasarkan data "Jadwal Buka" yang dikirim
+3. Tetap bisa membahas: konsep strategi, cara baca Fibonacci, analisis umum setup yang akan dicari, review sinyal historis dari riwayat sinyal
+4. JANGAN sebut "koneksi bermasalah" atau "disconnected" sebagai penyebab — itu bukan masalah, itu kondisi normal
+5. Gunakan waktu tunggu ini untuk edukasi atau persiapan trading
+
 SISTEM PERLINDUNGAN DAN FILTER:
 1. Session filter: Sinyal hanya aktif saat London (07:00-16:00 UTC) atau New York (13:00-22:00 UTC). Di luar sesi ini sinyal ditandai "low_confidence".
 2. Spike zone: Entry TIDAK diambil dalam 30 menit pertama London Open (07:00-07:30 UTC) dan NY Open (13:00-13:30 UTC) — zona stop hunt / spike tinggi.
@@ -164,10 +182,11 @@ Jika EMA50 makro berlawanan dengan fibTrend: sinyal counter-trend, risiko lebih 
 Jika dalam spike zone atau luar sesi: jelaskan mengapa sinyal saat itu "low_confidence" atau tidak ada.
 
 CARA MENJAWAB PERTANYAAN PENGGUNA:
-Kondisi pasar saat ini: Gunakan data real-time — harga vs zona, EMA alignment semua timeframe, sinyal aktif, jarak ke Golden Zone.
+Kondisi pasar saat market BUKA: Gunakan data real-time — harga vs zona, EMA alignment semua timeframe, sinyal aktif, jarak ke Golden Zone.
+Kondisi pasar saat market TUTUP: Jelaskan bahwa market XAUUSD sedang tutup, sebutkan jadwal buka berikutnya, dan tawarkan diskusi konsep/strategi atau review histori sinyal. JANGAN fokus pada "disconnected" — itu normal.
 Win rate / performa: Gunakan data statistik yang ada di snapshot. Kamu PUNYA akses ke data ini — wins, losses, pending, win rate. Jawab langsung dengan angka real.
 Konsep trading: Jelaskan secara presisi dalam konteks strategi LIBARTIN yang spesifik.
-BUY/SELL sekarang?: Cek sinyal aktif. Jika ada, sampaikan lengkap. Jika tidak, jelaskan kondisi aktual tajam dan spesifik.
+BUY/SELL sekarang?: Jika market tutup — jawab dengan jelas "market tutup, tidak bisa entry sekarang, buka kembali [jadwal]". Jika market buka — cek sinyal aktif dan kondisi zona.
 Fitur aplikasi: Jelaskan berdasarkan struktur tab, terutama apa yang terlihat di Dashboard dan tab Sinyal.
 Tentang proyek LIBARTIN: Kamu tahu semua — ini aplikasi trading XAUUSD real-time berbasis Fibonacci scalping, dikembangkan oleh Dzeck x Wakassim, terhubung live ke broker Deriv via WebSocket.
 
@@ -386,13 +405,52 @@ function buildMarketContext(snapshot: MarketStateSnapshot): string {
     return "Di luar sesi aktif (Asia/weekend) — sinyal low_confidence";
   })();
 
+  // Bedakan antara "market tutup" (normal) vs "benar-benar disconnected" (masalah teknis)
+  // Deriv otomatis menutup WebSocket saat market tutup — ini NORMAL, bukan error koneksi.
+  const connectionLabel = (() => {
+    if (snapshot.marketOpen) {
+      // Market harusnya buka — status koneksi penting
+      if (snapshot.connectionStatus === "connected") return "Terhubung (live data aktif)";
+      if (snapshot.connectionStatus === "connecting") return "Sedang menghubungkan...";
+      return "TERPUTUS — masalah teknis (market buka tapi koneksi gagal)";
+    } else {
+      // Market tutup — disconnect adalah NORMAL, bukan error
+      if (snapshot.connectionStatus === "connected") return "Terhubung (tidak normal saat market tutup)";
+      return "Terputus — NORMAL karena market tutup (bukan error koneksi)";
+    }
+  })();
+
+  // Jadwal buka market berikutnya (jika tutup)
+  const marketNextOpenLabel = (() => {
+    if (snapshot.marketOpen) return null;
+    const now = new Date();
+    const day = now.getUTCDay();
+    const mins = now.getUTCHours() * 60 + now.getUTCMinutes();
+    if (day === 6) {
+      // Sabtu — buka Minggu 22:00 UTC
+      const minsLeft = (24 * 60 - mins) + 22 * 60;
+      return `Buka kembali hari Minggu ~22:00 UTC (~${Math.floor(minsLeft / 60)}j lagi)`;
+    }
+    if (day === 0) {
+      // Minggu — buka jam 22:00 UTC malam ini
+      const minsLeft = 22 * 60 - mins;
+      if (minsLeft > 0) return `Buka kembali malam ini ~22:00 UTC (~${Math.floor(minsLeft / 60)}j lagi)`;
+    }
+    if (day === 5 && mins >= 22 * 60) {
+      // Jumat malam — buka Minggu
+      return "Buka kembali hari Minggu ~22:00 UTC";
+    }
+    return "Market tutup sementara";
+  })();
+
   const lines: string[] = [
     `[DATA PASAR REAL-TIME — LIBARTIN]`,
     `Waktu: ${toWIBString(new Date())}`,
-    `Harga XAUUSD: ${p !== null ? p.toFixed(2) : "Belum tersedia"}`,
-    `Status Pasar: ${snapshot.marketOpen ? "Buka" : "Tutup"}`,
+    `Harga XAUUSD: ${p !== null ? p.toFixed(2) : "Belum tersedia (market tutup)"}`,
+    `Status Pasar: ${snapshot.marketOpen ? "BUKA — market aktif" : "TUTUP — di luar jam trading XAUUSD"}`,
+    ...(marketNextOpenLabel ? [`Jadwal Buka: ${marketNextOpenLabel}`] : []),
     `Sesi Trading: ${sessionLabel}`,
-    `Koneksi Deriv: ${snapshot.connectionStatus}`,
+    `Koneksi Deriv: ${connectionLabel}`,
     ``,
     `[ANALISIS TEKNIKAL M15 — Struktur & Fibonacci]`,
     `Fibonacci Trend (penentu arah sinyal): ${fibTrendLabel}`,

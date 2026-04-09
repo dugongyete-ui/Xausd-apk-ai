@@ -73,3 +73,7 @@ externalPort = 8081
 [[ports]]
 localPort = 8082
 externalPort = 3000
+
+[postMerge]
+path = "scripts/post-merge.sh"
+timeoutMs = 120000

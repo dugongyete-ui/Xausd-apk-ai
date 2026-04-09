@@ -40,6 +40,7 @@ interface BacktestSignal {
   sessionTag: "active" | "low_confidence";
   anchorEpoch: number;
   confluence: boolean;
+  mae: number;
 }
 
 // ─── Constants ─────────────────────────────────────────────────────────────────
@@ -56,7 +57,7 @@ const MIN_RR2 = 1.0;                  // Minimum RR di TP2 agar sinyal layak dia
 
 // ─── CLI Args ──────────────────────────────────────────────────────────────────
 const args = process.argv.slice(2);
-const DAYS_WINDOW = (() => { const d = args.find((a) => a.startsWith("--days=")); return d ? Math.max(1, parseInt(d.split("=")[1]) || 1) : 1; })();
+const DAYS_WINDOW = (() => { const d = args.find((a) => a.startsWith("--days=")); if (!d) return 7; const n = parseInt(d.split("=")[1]); return Math.min(30, Math.max(1, isNaN(n) ? 7 : n)); })();
 const FILTER_SESSION = args.includes("--active-only"); // hanya hitung active session di winrate utama
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -286,15 +287,68 @@ function fetchCandles(granularity: number, startEpoch: number, endEpoch: number)
   });
 }
 
+// ─── Chunked fetch: transparently splits requests that exceed 5000 candles ─────
+const MAX_CANDLES_PER_REQUEST = 4999; // hard cap leaving 1 candle headroom for inclusive boundaries
+
+async function fetchCandlesChunked(granularity: number, startEpoch: number, endEpoch: number): Promise<Candle[]> {
+  // Inclusive estimate: number of candle slots from startEpoch to endEpoch
+  const estimatedCandles = Math.floor((endEpoch - startEpoch) / granularity) + 1;
+  if (estimatedCandles <= MAX_CANDLES_PER_REQUEST) {
+    return fetchCandles(granularity, startEpoch, endEpoch);
+  }
+
+  // Each chunk covers at most MAX_CANDLES_PER_REQUEST candles
+  // Span of one chunk (inclusive): MAX_CANDLES_PER_REQUEST candles → (MAX_CANDLES_PER_REQUEST - 1) * granularity seconds wide
+  const chunkSpan = (MAX_CANDLES_PER_REQUEST - 1) * granularity;
+  const chunks: Array<[number, number]> = [];
+  let chunkStart = startEpoch;
+  while (chunkStart <= endEpoch) {
+    const chunkEnd = Math.min(chunkStart + chunkSpan, endEpoch);
+    chunks.push([chunkStart, chunkEnd]);
+    chunkStart = chunkEnd + granularity; // next chunk starts on next candle boundary
+  }
+
+  console.log(`        (splitting into ${chunks.length} chunks to stay within API limits)`);
+
+  const allCandles: Candle[] = [];
+  for (let idx = 0; idx < chunks.length; idx++) {
+    const [cs, ce] = chunks[idx];
+    const part = await fetchCandles(granularity, cs, ce);
+    allCandles.push(...part);
+  }
+
+  // Deduplicate by epoch and sort
+  const seen = new Set<number>();
+  const deduped: Candle[] = [];
+  for (const c of allCandles) {
+    if (!seen.has(c.epoch)) {
+      seen.add(c.epoch);
+      deduped.push(c);
+    }
+  }
+  deduped.sort((a, b) => a.epoch - b.epoch);
+  return deduped;
+}
+
+// ─── Wilson score confidence interval for a proportion ────────────────────────
+function wilsonCI(wins: number, n: number, z = 1.96): [number, number] {
+  if (n === 0) return [0, 0];
+  const p = wins / n;
+  const denom = 1 + (z * z) / n;
+  const centre = (p + (z * z) / (2 * n)) / denom;
+  const margin = (z * Math.sqrt((p * (1 - p)) / n + (z * z) / (4 * n * n))) / denom;
+  return [Math.max(0, centre - margin), Math.min(1, centre + margin)];
+}
+
 // ─── Evaluate outcome of a signal given subsequent candles ─────────────────────
 // Implements breakeven trailing: after TP1 is hit, SL moves to entry price,
 // trade continues monitoring for TP2. If breakeven SL is hit → win_breakeven.
 function evaluateOutcome(
   signal: { trend: "Bullish" | "Bearish"; entryPrice: number; stopLoss: number; takeProfit1: number; takeProfit2: number; signalEpoch: number },
   allM5Candles: Candle[]
-): { outcome: "win_tp2" | "win_breakeven" | "loss" | "expired"; resolvedEpoch?: number; resolutionNote: string } {
+): { outcome: "win_tp2" | "win_breakeven" | "loss" | "expired"; resolvedEpoch?: number; resolutionNote: string; mae: number } {
   const signalIdx = allM5Candles.findIndex((c) => c.epoch >= signal.signalEpoch);
-  if (signalIdx < 0) return { outcome: "expired", resolutionNote: "candle not found" };
+  if (signalIdx < 0) return { outcome: "expired", resolutionNote: "candle not found", mae: 0 };
 
   const startIdx = signalIdx + 1;
   const endIdx = Math.min(startIdx + MAX_SIGNAL_LOOKAHEAD_BARS, allM5Candles.length);
@@ -302,6 +356,7 @@ function evaluateOutcome(
 
   let effectiveSL = signal.stopLoss;
   let tp1Locked = false;
+  let mae = 0;
 
   for (let i = startIdx; i < endIdx; i++) {
     const c = allM5Candles[i];
@@ -309,15 +364,21 @@ function evaluateOutcome(
     const tp1Hit = isBull ? c.high >= signal.takeProfit1 : c.low <= signal.takeProfit1;
     const slHit  = isBull ? c.low  <= effectiveSL        : c.high >= effectiveSL;
 
+    // Track MAE: adverse movement against position
+    const adverseMove = isBull
+      ? Math.max(0, signal.entryPrice - c.low)
+      : Math.max(0, c.high - signal.entryPrice);
+    if (adverseMove > mae) mae = adverseMove;
+
     // FIX: handle TP2 + SL same bar with candle body heuristic (previously TP2 was ignored)
     if (tp2Hit) {
-      if (!slHit) return { outcome: "win_tp2", resolvedEpoch: c.epoch, resolutionNote: `TP2 hit @ bar ${i - signalIdx}` };
+      if (!slHit) return { outcome: "win_tp2", resolvedEpoch: c.epoch, resolutionNote: `TP2 hit @ bar ${i - signalIdx}`, mae };
       // TP2 and SL hit same bar — use candle body direction to determine winner
       const candleDir2 = c.close > c.open ? "bull" : "bear";
       if ((isBull && candleDir2 === "bull") || (!isBull && candleDir2 === "bear")) {
-        return { outcome: "win_tp2", resolvedEpoch: c.epoch, resolutionNote: `TP2+SL same bar, body favors entry @ bar ${i - signalIdx}` };
+        return { outcome: "win_tp2", resolvedEpoch: c.epoch, resolutionNote: `TP2+SL same bar, body favors entry @ bar ${i - signalIdx}`, mae };
       }
-      return { outcome: "loss", resolvedEpoch: c.epoch, resolutionNote: `TP2+SL same bar, body against entry @ bar ${i - signalIdx}` };
+      return { outcome: "loss", resolvedEpoch: c.epoch, resolutionNote: `TP2+SL same bar, body against entry @ bar ${i - signalIdx}`, mae };
     }
 
     if (!tp1Locked) {
@@ -328,7 +389,7 @@ function evaluateOutcome(
         effectiveSL = signal.entryPrice;
         continue;
       }
-      if (slHit && !tp1Hit) return { outcome: "loss", resolvedEpoch: c.epoch, resolutionNote: `SL hit @ bar ${i - signalIdx}` };
+      if (slHit && !tp1Hit) return { outcome: "loss", resolvedEpoch: c.epoch, resolutionNote: `SL hit @ bar ${i - signalIdx}`, mae };
       // Both triggered same bar before TP1 locked — use candle body heuristic
       if (tp1Hit && slHit) {
         const candleDir = c.close > c.open ? "bull" : "bear";
@@ -337,17 +398,17 @@ function evaluateOutcome(
           effectiveSL = signal.entryPrice;
           continue;
         } else {
-          return { outcome: "loss", resolvedEpoch: c.epoch, resolutionNote: `TP1+SL same bar, body against entry @ bar ${i - signalIdx}` };
+          return { outcome: "loss", resolvedEpoch: c.epoch, resolutionNote: `TP1+SL same bar, body against entry @ bar ${i - signalIdx}`, mae };
         }
       }
     } else {
       // TP1 already hit — monitoring breakeven stop vs TP2
-      if (slHit) return { outcome: "win_breakeven", resolvedEpoch: c.epoch, resolutionNote: `Breakeven SL hit after TP1 @ bar ${i - signalIdx}` };
+      if (slHit) return { outcome: "win_breakeven", resolvedEpoch: c.epoch, resolutionNote: `Breakeven SL hit after TP1 @ bar ${i - signalIdx}`, mae };
     }
   }
   // With breakeven trailing, TP1 alone is not terminal — trade stays open until TP2 or trailing SL.
   // If neither resolved within lookahead, classify as expired regardless of TP1 state.
-  return { outcome: "expired", resolutionNote: `Belum resolve dalam ${MAX_SIGNAL_LOOKAHEAD_BARS} bar M5${tp1Locked ? " (TP1 hit, awaiting TP2/BE)" : ""}` };
+  return { outcome: "expired", resolutionNote: `Belum resolve dalam ${MAX_SIGNAL_LOOKAHEAD_BARS} bar M5${tp1Locked ? " (TP1 hit, awaiting TP2/BE)" : ""}`, mae };
 }
 
 // ─── Main Backtest ─────────────────────────────────────────────────────────────
@@ -374,12 +435,12 @@ async function runBacktest() {
 
   try {
     console.log("  [1/2] Mengambil candle M15 (konteks + window)...");
-    m15All = await fetchCandles(M15_GRAN, m15ContextStart, nowEpoch);
+    m15All = await fetchCandlesChunked(M15_GRAN, m15ContextStart, nowEpoch);
     console.log(`        ✓ ${m15All.length} candle M15 diterima`);
 
     console.log("  [2/2] Mengambil candle M5 (window + 200 konteks)...");
     const m5Start = startEpoch - (200 * M5_GRAN);
-    m5All = await fetchCandles(M5_GRAN, m5Start, nowEpoch);
+    m5All = await fetchCandlesChunked(M5_GRAN, m5Start, nowEpoch);
     console.log(`        ✓ ${m5All.length} candle M5 diterima\n`);
   } catch (err) {
     console.error("  ✗ Gagal mengambil data:", (err as Error).message);
@@ -607,7 +668,10 @@ async function runBacktest() {
         sessionTag,
         anchorEpoch: swing.anchorEpoch,
         confluence,
-        ...resolution,
+        outcome: resolution.outcome,
+        resolvedEpoch: resolution.resolvedEpoch,
+        resolutionNote: resolution.resolutionNote,
+        mae: resolution.mae,
       };
 
       signals.push(bsig);
@@ -621,7 +685,7 @@ async function runBacktest() {
       const sessFlag = sessionTag === "low_confidence" ? " [⚠ LOW_CONF]" : "";
       const confFlag = confluence ? " [✦ CONF]" : "";
       console.log(
-        `  ${outcomeIcon} | ${timeStr} | ${dir2} | Entry: ${entryPrice.toFixed(2)} | SL: ${sl.toFixed(2)} | TP1: ${tp1.toFixed(2)} | TP2: ${tp2.toFixed(2)} | RR: 1:${rr1}/1:${rr2} | ${confirmationType.toUpperCase()}${sessFlag}${confFlag} | ${resolution.resolutionNote}`
+        `  ${outcomeIcon} | ${timeStr} | ${dir2} | Entry: ${entryPrice.toFixed(2)} | SL: ${sl.toFixed(2)} | TP1: ${tp1.toFixed(2)} | TP2: ${tp2.toFixed(2)} | RR: 1:${rr1}/1:${rr2} | MAE: ${resolution.mae.toFixed(2)} pts | ${confirmationType.toUpperCase()}${sessFlag}${confFlag} | ${resolution.resolutionNote}`
       );
     }
   }
@@ -679,8 +743,13 @@ async function runBacktest() {
   console.log(`  Loss (SL)              : ${losses}`);
   console.log(`  Expired (>${MAX_SIGNAL_LOOKAHEAD_BARS / 12}jam)         : ${expired}`);
   console.log("───────────────────────────────────────────────────────────────");
-  console.log(`  WINRATE (vs resolved)  : ${winRate}   [${wins}/${resolved}]`);
-  console.log(`  WINRATE (vs semua)     : ${winRateAll}   [${wins}/${total}]`);
+  const [ciLow, ciHigh] = wilsonCI(wins, resolved);
+  const ciStr = resolved > 0 ? ` [CI: ${(ciLow * 100).toFixed(0)}%–${(ciHigh * 100).toFixed(0)}%]` : "";
+  console.log(`  WINRATE (vs resolved)  : ${winRate === "N/A" ? "N/A" : `${winRate}%`}${ciStr} [${wins}/${resolved}]`);
+  console.log(`  WINRATE (vs semua)     : ${winRateAll === "N/A" ? "N/A" : `${winRateAll}%`}   [${wins}/${total}]`);
+  if (resolved < 20) {
+    console.log(`  ⚠ Sampel terlalu kecil — hasil belum signifikan secara statistik`);
+  }
   console.log(`  Expected Value / trade : ${ev}R  (avg RR2=${avgRR2.toFixed(2)})`);
   console.log("───────────────────────────────────────────────────────────────");
   console.log(`  Session breakdown:`);

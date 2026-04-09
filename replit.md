@@ -107,6 +107,17 @@ Ketika HP dibuka kembali, app mengambil signal history dari backend — sudah ad
   - **Pending signal recovery on app open**: Endpoint baru `GET /api/current-signal` ditambahkan ke backend. Frontend (`TradingContext.tsx`) kini mem-fetch pending signal dari backend saat startup (Langkah 1.5) dan juga setiap 60 detik. Jika ada sinyal aktif di backend, `activeSignal` di frontend otomatis di-restore — tidak ada lagi "kosong" di dashboard saat buka app di tengah trade.
   - **Signal detection consistency**: Hapus filter M5 EMA20/EMA50 alignment dari frontend (`TradingContext.tsx`) karena backend tidak pernah punya filter ini. Sekarang frontend dan backend pakai kondisi yang sama: zone touch + candlestick pattern saja.
 
+- **2026-04-10 v5**: Streaming thinking live + expandable bubble seperti Claude/Deepseek:
+  - **Backend `chatStream` (`server/aiService.ts`)**: Tambah callback `onThinkingToken(token: string)` — token dalam blok `<thinking>...</thinking>` kini dikirim satu per satu ke client SAAT terbentuk, bukan menunggu seluruh blok selesai.
+  - **Backend route (`server/routes.ts`)**: Tambah `event: thinking_token\ndata: {"token":"..."}` SSE event untuk setiap token thinking yang masuk.
+  - **Frontend (`app/(tabs)/ai.tsx`)**:
+    - Ganti `fetch` + `await res.text()` (yang buffer semua data) ke **XMLHttpRequest** dengan `onprogress` — data SSE dibaca secara incremental saat tiba.
+    - Baru: `LiveThinkingBubble` — bubble expandable yang menampilkan teks thinking yang sedang streaming live dengan kursor berkedip dan badge "LIVE". User bisa klik untuk expand/collapse kapan saja.
+    - Baru: `StreamCursor` — kursor berkedip yang muncul di akhir streaming thinking.
+    - Baru: `parseSSEChunk()` function — parser SSE yang reusable, handle `thinking_token`, `thinking`, `chunk`, `error`, dan `done` events.
+    - Flow UI baru: placeholder "Sedang menganalisis..." → diganti ke LiveThinkingBubble saat token pertama tiba → setelah thinking selesai badge berubah dari "LIVE" ke "Proses Berpikir" → response AI mulai streaming di bawahnya.
+    - Default collapsed — user harus klik sendiri untuk melihat isi thinking (tidak mengganggu jika tidak ingin lihat).
+
 - **2026-04-09 v4**: Audit & fix Fibonacci terlalu cepat berganti:
   - **2-bar fractal** di `server/derivService.ts` dan `contexts/TradingContext.tsx`: swing high/low kini butuh 2 candle konfirmasi di kiri DAN kanan (sebelumnya hanya 1). Artinya swing baru baru dikonfirmasi setelah 30 menit (2 candle M15), bukan hanya 15 menit. Ini drastis mengurangi frekuensi redraw Fibonacci.
   - **Span minimum 5 candle** (dari 3) di ketiga lokasi `findSwings` (`server/derivService.ts`, `contexts/TradingContext.tsx`, `shared/indicators.ts`). Impulse M15 minimal 75 menit (5 × 15 menit) agar dianggap valid — menghilangkan false swing dari gerakan singkat 45 menit.

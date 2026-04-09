@@ -240,8 +240,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
       },
       (thinking: string) => {
+        // Full thinking block complete
         if (!streamDone) {
           res.write(`event: thinking\ndata: ${JSON.stringify({ thinking })}\n\n`);
+          flush();
+        }
+      },
+      (token: string) => {
+        // Live thinking token — streams character by character while AI is thinking
+        if (!streamDone) {
+          res.write(`event: thinking_token\ndata: ${JSON.stringify({ token })}\n\n`);
           flush();
         }
       }

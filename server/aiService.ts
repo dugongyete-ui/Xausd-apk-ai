@@ -861,7 +861,8 @@ class AIService {
     onChunk: (chunk: string) => void,
     onDone: (fullResponse: string, thinking?: string) => void,
     onError: (err: string) => void,
-    onThinking?: (thinking: string) => void
+    onThinking?: (thinking: string) => void,
+    onThinkingToken?: (token: string) => void
   ): void {
     const marketCtx = buildMarketContext(snapshot);
     const messages: Array<{ role: string; content: string }> = [];
@@ -893,10 +894,14 @@ class AIService {
     // Thinking state machine:
     // Phase 1 — accumulate into thinkingBuf until </thinking> is found
     // Phase 2 — stream response tokens directly via onChunk
+    //
+    // onThinkingToken is called for each token INSIDE <thinking>...</thinking>
+    // so the client can stream the thinking text live token by token.
     let thinkingBuf = "";
     let responseBuf = "";
     let phase: "thinking" | "response" = "thinking";
     let thinkingEmitted = false;
+    let insideThinkingTag = false; // true once <thinking> opening tag confirmed
 
     const handleToken = (token: string) => {
       if (phase === "thinking") {
@@ -915,8 +920,14 @@ class AIService {
           return;
         }
 
+        // Detect opening <thinking> tag
+        if (!insideThinkingTag && thinkingBuf.includes("<thinking>")) {
+          insideThinkingTag = true;
+        }
+
         const closeIdx = thinkingBuf.indexOf("</thinking>");
         if (closeIdx !== -1) {
+          // Full thinking block received — emit complete thinking event
           const openIdx = thinkingBuf.indexOf("<thinking>");
           const raw =
             openIdx === 0
@@ -937,6 +948,15 @@ class AIService {
           if (rest) {
             responseBuf += rest;
             onChunk(rest);
+          }
+        } else if (insideThinkingTag && onThinkingToken) {
+          // We're inside <thinking> block — stream this token live
+          // Strip the <thinking> tag itself from the first emission
+          if (token.includes("<thinking>")) {
+            const after = token.slice(token.indexOf("<thinking>") + 10);
+            if (after) onThinkingToken(after);
+          } else {
+            onThinkingToken(token);
           }
         }
       } else {

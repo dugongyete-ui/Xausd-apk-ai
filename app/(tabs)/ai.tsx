@@ -17,6 +17,7 @@ import {
   Animated,
   LayoutAnimation,
   UIManager,
+  ScrollView,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
@@ -47,6 +48,8 @@ interface ChatMessage {
   role: "user" | "assistant";
   content: string;
   thinking?: string;
+  streamingThinking?: string;  // live thinking text accumulating
+  isThinkingStreaming?: boolean; // true while thinking tokens are arriving
   streaming?: boolean;
   thinkingPhase?: boolean;
 }
@@ -119,7 +122,96 @@ const typingStyles = StyleSheet.create({
   },
 });
 
-// ─── Thinking Process Panel ────────────────────────────────────────────────────
+// ─── Streaming Cursor ──────────────────────────────────────────────────────────
+function StreamCursor() {
+  const opacity = useRef(new Animated.Value(1)).current;
+
+  useEffect(() => {
+    const anim = Animated.loop(
+      Animated.sequence([
+        Animated.timing(opacity, { toValue: 0, duration: 500, useNativeDriver: true }),
+        Animated.timing(opacity, { toValue: 1, duration: 500, useNativeDriver: true }),
+      ])
+    );
+    anim.start();
+    return () => anim.stop();
+  }, [opacity]);
+
+  return (
+    <Animated.Text style={[thinkStyles.cursor, { opacity }]}>▌</Animated.Text>
+  );
+}
+
+// ─── Live Thinking Bubble (streaming in real-time) ─────────────────────────────
+// Ditampilkan saat AI sedang berpikir — bisa diklik untuk expand dan lihat teks
+function LiveThinkingBubble({
+  text,
+  isStreaming,
+}: {
+  text: string;
+  isStreaming: boolean;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const pulse = useRef(new Animated.Value(0.6)).current;
+
+  useEffect(() => {
+    if (!isStreaming) return;
+    const anim = Animated.loop(
+      Animated.sequence([
+        Animated.timing(pulse, { toValue: 1, duration: 700, useNativeDriver: true }),
+        Animated.timing(pulse, { toValue: 0.6, duration: 700, useNativeDriver: true }),
+      ])
+    );
+    anim.start();
+    return () => anim.stop();
+  }, [isStreaming, pulse]);
+
+  const toggle = () => {
+    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+    setExpanded((v) => !v);
+  };
+
+  return (
+    <View style={thinkStyles.wrapper}>
+      <Pressable onPress={toggle} style={thinkStyles.header}>
+        <View style={thinkStyles.headerLeft}>
+          <Animated.View style={{ opacity: isStreaming ? pulse : 1 }}>
+            <Ionicons name="flash" size={13} color={C.gold} />
+          </Animated.View>
+          <Text style={thinkStyles.headerLabel}>
+            {isStreaming ? "Sedang Berpikir..." : "Proses Berpikir"}
+          </Text>
+          {isStreaming && (
+            <View style={thinkStyles.liveChip}>
+              <Text style={thinkStyles.liveChipText}>LIVE</Text>
+            </View>
+          )}
+        </View>
+        <Ionicons
+          name={expanded ? "chevron-up" : "chevron-down"}
+          size={14}
+          color={C.textDim}
+        />
+      </Pressable>
+      {expanded && (
+        <View style={thinkStyles.body}>
+          <ScrollView
+            style={thinkStyles.scrollArea}
+            showsVerticalScrollIndicator={false}
+            nestedScrollEnabled
+          >
+            <Text style={thinkStyles.text}>
+              {text || " "}
+              {isStreaming && <StreamCursor />}
+            </Text>
+          </ScrollView>
+        </View>
+      )}
+    </View>
+  );
+}
+
+// ─── Thinking Process Panel (final — collapsed by default) ────────────────────
 function ThinkingProcess({ thinking }: { thinking: string }) {
   const [expanded, setExpanded] = useState(false);
 
@@ -179,22 +271,40 @@ const thinkStyles = StyleSheet.create({
     color: C.gold,
     letterSpacing: 0.3,
   },
+  liveChip: {
+    backgroundColor: C.gold,
+    borderRadius: 4,
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+  },
+  liveChipText: {
+    fontFamily: "Inter_700Bold",
+    fontSize: 8,
+    color: C.bg,
+    letterSpacing: 0.5,
+  },
   body: {
     paddingHorizontal: 12,
     paddingBottom: 10,
     borderTopWidth: 1,
     borderTopColor: C.gold + "22",
   },
+  scrollArea: {
+    maxHeight: 180,
+    marginTop: 8,
+  },
   text: {
     fontFamily: "Inter_400Regular",
     fontSize: 12,
     color: C.textSub,
     lineHeight: 18,
-    marginTop: 8,
+  },
+  cursor: {
+    color: C.gold,
   },
 });
 
-// ─── Thinking Phase Bubble (saat AI sedang berpikir) ─────────────────────────
+// ─── Thinking Phase Bubble (before thinking tokens start arriving) ─────────────
 function ThinkingPhaseBubble() {
   const pulse = useRef(new Animated.Value(0.5)).current;
 
@@ -246,10 +356,24 @@ const thinkPhaseStyles = StyleSheet.create({
 function MessageBubble({ msg }: { msg: ChatMessage }) {
   const isUser = msg.role === "user";
 
+  // Initial thinking phase (before any tokens arrive)
   if (msg.thinkingPhase) {
     return <ThinkingPhaseBubble />;
   }
 
+  // Streaming thinking phase — show the live thinking bubble + optional empty response area
+  if (msg.isThinkingStreaming) {
+    return (
+      <View>
+        <LiveThinkingBubble
+          text={msg.streamingThinking ?? ""}
+          isStreaming={true}
+        />
+      </View>
+    );
+  }
+
+  // Typing dots while waiting for first chunk (thinking done, response loading)
   if (msg.streaming && !msg.content) {
     return (
       <View style={[bubbleStyles.row, bubbleStyles.rowLeft]}>
@@ -267,6 +391,12 @@ function MessageBubble({ msg }: { msg: ChatMessage }) {
     <View>
       {!isUser && msg.thinking && (
         <ThinkingProcess thinking={msg.thinking} />
+      )}
+      {!isUser && msg.streamingThinking && !msg.thinking && (
+        <LiveThinkingBubble
+          text={msg.streamingThinking}
+          isStreaming={false}
+        />
       )}
       <View style={[bubbleStyles.row, isUser ? bubbleStyles.rowRight : bubbleStyles.rowLeft]}>
         {!isUser && (
@@ -473,6 +603,70 @@ const emptyStyles = StyleSheet.create({
   },
 });
 
+// ─── SSE line parser ───────────────────────────────────────────────────────────
+interface SSEParserState {
+  lineBuffer: string;
+  currentEvent: string;
+}
+
+function parseSSEChunk(
+  raw: string,
+  state: SSEParserState,
+  handlers: {
+    onThinkingToken: (token: string) => void;
+    onThinking: (thinking: string) => void;
+    onChunk: (chunk: string) => void;
+    onError: (err: string) => void;
+    onDone: () => void;
+  }
+) {
+  state.lineBuffer += raw;
+  const lines = state.lineBuffer.split("\n");
+  state.lineBuffer = lines.pop() ?? "";
+
+  for (const line of lines) {
+    const trimmed = line.trimEnd();
+
+    if (trimmed.startsWith("event: ")) {
+      state.currentEvent = trimmed.slice(7).trim();
+    } else if (trimmed.startsWith("data: ")) {
+      const rawData = trimmed.slice(6);
+
+      if (state.currentEvent === "thinking_token") {
+        try {
+          const parsed = JSON.parse(rawData) as { token?: string };
+          if (parsed.token) handlers.onThinkingToken(parsed.token);
+        } catch { /* ignore */ }
+
+      } else if (state.currentEvent === "thinking") {
+        try {
+          const parsed = JSON.parse(rawData) as { thinking?: string };
+          if (parsed.thinking) handlers.onThinking(parsed.thinking);
+        } catch { /* ignore */ }
+
+      } else if (state.currentEvent === "chunk") {
+        try {
+          const parsed = JSON.parse(rawData) as { chunk?: string };
+          if (parsed.chunk) handlers.onChunk(parsed.chunk);
+        } catch { /* ignore */ }
+
+      } else if (state.currentEvent === "error") {
+        try {
+          const parsed = JSON.parse(rawData) as { error?: string };
+          handlers.onError(parsed.error ?? "AI error");
+        } catch {
+          handlers.onError("AI mengalami error.");
+        }
+
+      } else if (state.currentEvent === "done") {
+        handlers.onDone();
+      }
+
+      state.currentEvent = "";
+    }
+  }
+}
+
 // ─── Main AI Chat Screen ───────────────────────────────────────────────────────
 export default function AIScreen() {
   const insets = useSafeAreaInsets();
@@ -482,6 +676,7 @@ export default function AIScreen() {
   const flatListRef = useRef<FlatList>(null);
   const streamingIdRef = useRef<string | null>(null);
   const thinkingIdRef = useRef<string | null>(null);
+  const thinkingStreamIdRef = useRef<string | null>(null);
   const inputRef = useRef<TextInput>(null);
 
   const scrollToBottom = useCallback(() => {
@@ -502,7 +697,7 @@ export default function AIScreen() {
       content: text,
     };
 
-    // Thinking phase bubble
+    // Initial thinking placeholder bubble
     const thinkingBubbleId = `think_${Date.now()}`;
     thinkingIdRef.current = thinkingBubbleId;
     const thinkingMsg: ChatMessage = {
@@ -512,7 +707,12 @@ export default function AIScreen() {
       thinkingPhase: true,
     };
 
-    const msgId = `a_${Date.now() + 1}`;
+    // ID for the live thinking streaming bubble
+    const thinkingStreamId = `tstream_${Date.now() + 1}`;
+    thinkingStreamIdRef.current = thinkingStreamId;
+
+    // ID for the final AI response
+    const msgId = `a_${Date.now() + 2}`;
     streamingIdRef.current = msgId;
 
     setMessages((prev) => [...prev, userMsg, thinkingMsg]);
@@ -530,29 +730,32 @@ export default function AIScreen() {
     }
 
     const showError = (errMsg: string) => {
-      setMessages((prev) => prev.filter((m) => m.id !== thinkingBubbleId));
+      setMessages((prev) =>
+        prev.filter((m) => m.id !== thinkingBubbleId && m.id !== thinkingStreamId)
+      );
       setMessages((prev) => [
         ...prev,
         { id: msgId, role: "assistant", content: errMsg, streaming: false },
       ]);
+      streamingIdRef.current = null;
+      thinkingStreamIdRef.current = null;
       setIsStreaming(false);
     };
 
-    // ── Display animation ticker ──────────────────────────────────────────────
-    // Decouples visual animation from data arrival speed.
-    // Works whether data streams token-by-token or arrives all at once (proxy-buffered).
-    let fullReceived = "";      // all content received from server (grows as chunks arrive)
-    let displayedLen = 0;       // how many chars have been shown to user
-    let streamDone = false;     // true when server closes the stream
-    let thinkingText: string | undefined;
-    let messageCreated = false; // true once thinking bubble is replaced with real msg
+    // ── State variables shared across callbacks ────────────────────────────────
+    let fullReceived = "";       // all response content received
+    let displayedLen = 0;        // how many chars shown to user
+    let serverStreamDone = false;
+    let capturedThinking: string | undefined;
+    let messageCreated = false;  // true once thinking bubble replaced with real msg
+    let thinkingStreamCreated = false; // true once live thinking bubble shown
 
-    const TICK_MS = 22; // ~45 chars/s — smooth on mobile
+    const TICK_MS = 22;
 
+    // ── Response ticker (word by word animation) ───────────────────────────────
     const runTicker = () => {
       const advance = () => {
         if (displayedLen < fullReceived.length) {
-          // Advance by one word-token at a time
           const remaining = fullReceived.slice(displayedLen);
           const match = remaining.match(/^(\S+\s*)/);
           const step = match ? match[1] : remaining[0];
@@ -564,11 +767,9 @@ export default function AIScreen() {
           );
           scrollToBottom();
           setTimeout(advance, TICK_MS);
-        } else if (!streamDone) {
-          // Waiting for more data
+        } else if (!serverStreamDone) {
           setTimeout(advance, TICK_MS);
         } else {
-          // All content displayed and stream is done
           streamingIdRef.current = null;
           setMessages((prev) =>
             prev.map((m) => (m.id === msgId ? { ...m, streaming: false } : m))
@@ -579,19 +780,22 @@ export default function AIScreen() {
       setTimeout(advance, TICK_MS);
     };
 
-    // Creates the real AI message (replaces thinking bubble) and starts the ticker
-    const initMessage = (thinking?: string) => {
+    // ── Transition from thinking → response bubble ─────────────────────────────
+    const initResponseMessage = (thinking?: string) => {
       if (messageCreated) return;
       messageCreated = true;
       setMessages((prev) => {
-        const filtered = prev.filter((m) => m.id !== thinkingBubbleId);
+        // Remove both the initial thinking placeholder AND the streaming thinking bubble
+        const filtered = prev.filter(
+          (m) => m.id !== thinkingBubbleId && m.id !== thinkingStreamId
+        );
         return [
           ...filtered,
           {
             id: msgId,
             role: "assistant" as const,
             content: "",
-            ...(thinking ? { thinking } : {}),
+            ...(thinking ? { thinking } : capturedThinking ? { thinking: capturedThinking } : {}),
             streaming: true,
           },
         ];
@@ -600,98 +804,132 @@ export default function AIScreen() {
       runTicker();
     };
 
-    // ── Fetch + SSE parse ─────────────────────────────────────────────────────
-    try {
-      const controller = new AbortController();
-      const fetchTimeout = setTimeout(() => controller.abort(), 90000); // 90s max
+    // ── Thinking token handler — shows streaming bubble ────────────────────────
+    const handleThinkingToken = (token: string) => {
+      if (!thinkingStreamCreated) {
+        // Replace initial "Sedang menganalisis..." bubble with streaming thinking bubble
+        thinkingStreamCreated = true;
+        setMessages((prev) => {
+          const filtered = prev.filter((m) => m.id !== thinkingBubbleId);
+          return [
+            ...filtered,
+            {
+              id: thinkingStreamId,
+              role: "assistant" as const,
+              content: "",
+              streamingThinking: token,
+              isThinkingStreaming: true,
+            },
+          ];
+        });
+        scrollToBottom();
+      } else {
+        // Append token to the live thinking bubble
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === thinkingStreamId
+              ? { ...m, streamingThinking: (m.streamingThinking ?? "") + token }
+              : m
+          )
+        );
+      }
+    };
 
-      const res = await fetch(`${BACKEND_URL}/api/ai/stream`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: text }),
-        signal: controller.signal,
+    // ── Full thinking block received ───────────────────────────────────────────
+    const handleThinkingComplete = (thinking: string) => {
+      capturedThinking = thinking;
+      // Mark thinking as done (stops the streaming indicator)
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === thinkingStreamId
+            ? { ...m, isThinkingStreaming: false, streamingThinking: thinking }
+            : m
+        )
+      );
+    };
+
+    // ── Content chunk received ─────────────────────────────────────────────────
+    const handleChunk = (chunk: string) => {
+      if (!messageCreated) initResponseMessage(capturedThinking);
+      fullReceived += chunk;
+    };
+
+    // ── Stream done ────────────────────────────────────────────────────────────
+    const handleDone = () => {
+      serverStreamDone = true;
+      if (!messageCreated) initResponseMessage(capturedThinking);
+    };
+
+    // ── XHR streaming — reads SSE incrementally via onprogress ────────────────
+    // XHR works on both web and React Native with progressive response reading.
+    const sseState: SSEParserState = { lineBuffer: "", currentEvent: "" };
+    let xhrProcessedLen = 0;
+    let xhrDone = false;
+
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", `${BACKEND_URL}/api/ai/stream`, true);
+    xhr.setRequestHeader("Content-Type", "application/json");
+    xhr.timeout = 90000;
+
+    xhr.onprogress = () => {
+      if (xhrDone) return;
+      const newChunk = xhr.responseText.slice(xhrProcessedLen);
+      xhrProcessedLen = xhr.responseText.length;
+      if (!newChunk) return;
+
+      parseSSEChunk(newChunk, sseState, {
+        onThinkingToken: handleThinkingToken,
+        onThinking: handleThinkingComplete,
+        onChunk: handleChunk,
+        onError: showError,
+        onDone: () => { /* handled in onload */ },
       });
+    };
 
-      clearTimeout(fetchTimeout);
+    xhr.onload = () => {
+      if (xhrDone) return;
+      xhrDone = true;
 
-      if (!res.ok) {
-        const errBody = await res.text().catch(() => "");
+      // Process any remaining data
+      const remaining = xhr.responseText.slice(xhrProcessedLen);
+      if (remaining) {
+        parseSSEChunk(remaining, sseState, {
+          onThinkingToken: handleThinkingToken,
+          onThinking: handleThinkingComplete,
+          onChunk: handleChunk,
+          onError: showError,
+          onDone: () => {},
+        });
+      }
+
+      if (xhr.status < 200 || xhr.status >= 300) {
         let errMsg = "AI tidak dapat dijangkau. Coba lagi sebentar.";
         try {
-          const parsed = JSON.parse(errBody) as { error?: string };
+          const parsed = JSON.parse(xhr.responseText) as { error?: string };
           if (parsed.error) errMsg = parsed.error;
         } catch { /* ignore */ }
         showError(errMsg);
         return;
       }
 
-      // Read full response as text (handles both streaming and buffered environments)
-      const rawBody = await res.text();
+      handleDone();
+    };
 
-      // Parse all SSE events from the complete body text
-      let lineBuffer = "";
-      let currentEvent = "";
-
-      const processLines = (text: string) => {
-        lineBuffer += text;
-        const lines = lineBuffer.split("\n");
-        lineBuffer = lines.pop() ?? "";
-
-        for (const line of lines) {
-          const trimmed = line.trimEnd();
-
-          if (trimmed.startsWith("event: ")) {
-            currentEvent = trimmed.slice(7).trim();
-          } else if (trimmed.startsWith("data: ")) {
-            const rawData = trimmed.slice(6);
-
-            if (currentEvent === "thinking") {
-              try {
-                const parsed = JSON.parse(rawData) as { thinking?: string };
-                if (parsed.thinking && !thinkingText) {
-                  thinkingText = parsed.thinking;
-                  initMessage(thinkingText);
-                }
-              } catch { /* ignore */ }
-
-            } else if (currentEvent === "chunk") {
-              try {
-                const parsed = JSON.parse(rawData) as { chunk?: string };
-                if (parsed.chunk) {
-                  if (!messageCreated) initMessage(thinkingText);
-                  fullReceived += parsed.chunk;
-                }
-              } catch { /* ignore */ }
-
-            } else if (currentEvent === "error") {
-              try {
-                const parsed = JSON.parse(rawData) as { error?: string };
-                showError(parsed.error ?? "AI error");
-              } catch {
-                showError("AI mengalami error.");
-              }
-            }
-
-            currentEvent = "";
-          }
-        }
-      };
-
-      processLines(rawBody);
-      streamDone = true;
-
-      // If no content came through at all, show error
-      if (!messageCreated) {
-        showError("AI tidak dapat merespons saat ini. Coba lagi sebentar.");
-      }
-
-    } catch (err: unknown) {
-      if (err instanceof Error && err.name === "AbortError") {
-        showError("AI memerlukan waktu terlalu lama. Coba lagi sebentar.");
-      } else {
+    xhr.onerror = () => {
+      if (!xhrDone) {
+        xhrDone = true;
         showError("Koneksi ke server gagal. Coba lagi dalam beberapa detik.");
       }
-    }
+    };
+
+    xhr.ontimeout = () => {
+      if (!xhrDone) {
+        xhrDone = true;
+        showError("AI memerlukan waktu terlalu lama. Coba lagi sebentar.");
+      }
+    };
+
+    xhr.send(JSON.stringify({ message: text }));
   }, [input, isStreaming, scrollToBottom]);
 
   const handleKeyPress = useCallback(

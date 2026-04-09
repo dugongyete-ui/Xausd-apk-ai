@@ -482,6 +482,14 @@ class DerivService {
   private fibTrend: "Bullish" | "Bearish" | null = null;
   // ID sinyal yang dibatalkan karena trend berbalik — tidak boleh di-resurrect
   private cancelledSignalIds: Set<string> = new Set();
+
+  // ── Zone entry alert tracking ──────────────────────────────────────────────
+  // Deteksi transisi harga masuk zona Fibonacci → trigger AI alert otomatis
+  // Key = "<swingHigh>_<swingLow>" per arah; reset ketika harga keluar zona
+  private inBullZoneState: boolean = false;
+  private inBearZoneState: boolean = false;
+  private lastBullZoneAlertKey: string | null = null;
+  private lastBearZoneAlertKey: string | null = null;
   private signalHistory: TradingSignal[] = (() => {
     const s = loadSignals();
     return s;
@@ -726,6 +734,10 @@ class DerivService {
       if (anchorChanged) {
         this.lastBullSignaledEpoch = null;
         this.bullAnchorSignaled    = null;
+        // Reset zone alert state so new anchor can trigger alert when price enters zone
+        this.inBullZoneState    = false;
+        this.lastBullZoneAlertKey = null;
+        aiService.resetZoneKey("Bullish");
       }
     } else {
       this.lastBearSwing    = newState;
@@ -733,6 +745,10 @@ class DerivService {
       if (anchorChanged) {
         this.lastBearSignaledEpoch = null;
         this.bearAnchorSignaled    = null;
+        // Reset zone alert state so new anchor can trigger alert when price enters zone
+        this.inBearZoneState    = false;
+        this.lastBearZoneAlertKey = null;
+        aiService.resetZoneKey("Bearish");
       }
     }
 
@@ -906,6 +922,68 @@ class DerivService {
         this.cancelledSignalIds.add(this.currentSignal.id);
         this.currentSignal = null;
         this.fibTrend = liveTrend;
+      }
+    }
+
+    // ── Deteksi Zone Entry → trigger AI alert otomatis ───────────────────
+    // Hanya alert ketika harga baru MASUK zona (transisi false→true).
+    // Tidak alert jika sinyal sudah aktif untuk arah itu (sudah confirmed).
+    if (this.currentPrice !== null) {
+      const checkZoneEntry = (fib: FibLevels | null, dir: "Bullish" | "Bearish"): boolean => {
+        if (!fib) return false;
+        const range = Math.abs(fib.swingHigh - fib.swingLow);
+        let lo: number, hi: number;
+        if (dir === "Bearish") {
+          lo = fib.swingLow + range * 0.50;
+          hi = fib.swingLow + range * 0.886;
+        } else {
+          lo = fib.swingHigh - range * 0.886;
+          hi = fib.swingHigh - range * 0.50;
+        }
+        return this.currentPrice! >= lo && this.currentPrice! <= hi;
+      };
+
+      const nowInBull = checkZoneEntry(this.bullFibLevels, "Bullish");
+      const nowInBear = checkZoneEntry(this.bearFibLevels, "Bearish");
+      const hasBullSignal = this.activeBuySignalId !== null;
+      const hasBearSignal = this.activeSellSignalId !== null;
+
+      // BUY zone entry
+      if (nowInBull && !this.inBullZoneState && !hasBullSignal && this.bullFibLevels) {
+        this.inBullZoneState = true;
+        const key = `bull_${this.bullFibLevels.swingHigh.toFixed(1)}_${this.bullFibLevels.swingLow.toFixed(1)}`;
+        if (key !== this.lastBullZoneAlertKey) {
+          this.lastBullZoneAlertKey = key;
+          const snap = this.getSnapshot();
+          aiService.generateZoneAlert(snap, "Bullish", key).catch((e) =>
+            console.error("[AIService] Zone alert BUY error:", e)
+          );
+        }
+      } else if (!nowInBull) {
+        if (this.inBullZoneState) {
+          this.inBullZoneState = false;
+          this.lastBullZoneAlertKey = null;
+          aiService.resetZoneKey("Bullish");
+        }
+      }
+
+      // SELL zone entry
+      if (nowInBear && !this.inBearZoneState && !hasBearSignal && this.bearFibLevels) {
+        this.inBearZoneState = true;
+        const key = `bear_${this.bearFibLevels.swingHigh.toFixed(1)}_${this.bearFibLevels.swingLow.toFixed(1)}`;
+        if (key !== this.lastBearZoneAlertKey) {
+          this.lastBearZoneAlertKey = key;
+          const snap = this.getSnapshot();
+          aiService.generateZoneAlert(snap, "Bearish", key).catch((e) =>
+            console.error("[AIService] Zone alert SELL error:", e)
+          );
+        }
+      } else if (!nowInBear) {
+        if (this.inBearZoneState) {
+          this.inBearZoneState = false;
+          this.lastBearZoneAlertKey = null;
+          aiService.resetZoneKey("Bearish");
+        }
       }
     }
 

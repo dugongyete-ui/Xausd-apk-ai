@@ -415,7 +415,9 @@ class AIService {
   private displayMessages: AIMessage[] = [];
   private conversationHistory: ConversationTurn[] = [];
   private isGenerating = false;
+  private isGeneratingZoneAlert = false;
   private lastSignalId: string | null = null;
+  private lastZoneKeys: { bull: string | null; bear: string | null } = { bull: null, bear: null };
 
   private readonly MAX_HISTORY_TURNS = 6;
   private readonly MAX_DISPLAY_MESSAGES = 60;
@@ -509,6 +511,73 @@ class AIService {
     } finally {
       this.isGenerating = false;
     }
+  }
+
+  // ─── Zone Entry Alert (auto-triggered when price enters Fibonacci zone) ─────
+  // Pesan singkat: "Harga sudah masuk zona BUY/SELL — pantau konfirmasi M5"
+  // Berjalan di flag isGeneratingZoneAlert tersendiri agar tidak blokir sinyal.
+  async generateZoneAlert(
+    snapshot: MarketStateSnapshot,
+    direction: "Bullish" | "Bearish",
+    zoneKey: string
+  ): Promise<void> {
+    const dir = direction === "Bullish" ? "bull" : "bear";
+    if (this.lastZoneKeys[dir] === zoneKey) return;
+    if (this.isGeneratingZoneAlert) return;
+    this.isGeneratingZoneAlert = true;
+    this.lastZoneKeys[dir] = zoneKey;
+
+    const dirLabel = direction === "Bullish" ? "BUY" : "SELL";
+    const marketCtx = buildMarketContext(snapshot);
+
+    const fib = direction === "Bullish" ? snapshot.bullFibLevels : snapshot.bearFibLevels;
+    const zoneInfo = fib
+      ? ` antara ${fib.level786.toFixed(2)}–${fib.level618.toFixed(2)}`
+      : "";
+
+    const userMsg =
+      `${marketCtx}\n\n` +
+      `ALERT ZONA ${dirLabel}: Harga XAUUSD (${snapshot.currentPrice?.toFixed(2) ?? "?"}) baru saja masuk ke Golden Zone Fibonacci ${dirLabel}${zoneInfo}.\n` +
+      `Sistem sekarang memantau konfirmasi candlestick M5 (Pin Bar Rejection atau Engulfing) untuk validasi entry.\n\n` +
+      `Tulis pesan singkat kepada trader — seperti analis prop firm yang memberi tahu secara langsung:\n` +
+      `1) Bahwa harga sudah masuk zona ${dirLabel} Fibonacci (sebutkan area harga spesifik dari data)\n` +
+      `2) Apa yang akan dipantau untuk konfirmasi M5 (sebutkan kondisi EMA alignment saat ini)\n` +
+      `3) Instruksi singkat: siap-siap setup, belum entry sebelum konfirmasi closed M5 valid\n` +
+      `Tulis dalam 3–4 kalimat saja, gaya bicara langsung dan tajam, teks biasa tanpa format.`;
+
+    console.log(`[AIService] Generating zone alert: ${dirLabel} zone @ ${snapshot.currentPrice?.toFixed(2)}`);
+
+    try {
+      const response = await callCohereAI([{ role: "user", content: userMsg }]);
+
+      const fallback =
+        `Harga XAUUSD (${snapshot.currentPrice?.toFixed(2) ?? "?"}) masuk zona ${dirLabel} Fibonacci${zoneInfo}. ` +
+        `Sistem sekarang memantau konfirmasi candle M5 — tunggu Pin Bar atau Engulfing closed sebelum entry. ` +
+        `Belum ada sinyal valid, jangan jump in dulu.`;
+
+      const clean = response ? stripMarkdown(response) : fallback;
+
+      this.addDisplayMessage({
+        role: "assistant",
+        content: clean,
+        type: "market",
+        metadata: { trend: direction },
+      });
+
+      this.addToHistory("assistant", clean);
+
+      console.log(`[AIService] Zone alert done (${clean.length} chars)`);
+    } catch (e) {
+      console.error("[AIService] Zone alert error:", (e as Error).message);
+    } finally {
+      this.isGeneratingZoneAlert = false;
+    }
+  }
+
+  // Reset zone key for a direction (called when price exits zone or Fibonacci anchor changes)
+  resetZoneKey(direction: "Bullish" | "Bearish"): void {
+    const dir = direction === "Bullish" ? "bull" : "bear";
+    this.lastZoneKeys[dir] = null;
   }
 
   // ─── Outcome Commentary (auto-triggered on TP/SL) ──────────────────────────

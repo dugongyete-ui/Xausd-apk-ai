@@ -1,15 +1,6 @@
 import https from "https";
 import type { TradingSignal, MarketStateSnapshot } from "./derivService";
-
-// ─── WIB Timezone Helper (UTC+7) ──────────────────────────────────────────────
-function toWIBString(date: Date): string {
-  const WIB_OFFSET = 7 * 60 * 60 * 1000;
-  const wib = new Date(date.getTime() + WIB_OFFSET);
-  const pad = (n: number) => String(n).padStart(2, "0");
-  const days = ["Min", "Sen", "Sel", "Rab", "Kam", "Jum", "Sab"];
-  const months = ["Jan", "Feb", "Mar", "Apr", "Mei", "Jun", "Jul", "Agu", "Sep", "Okt", "Nov", "Des"];
-  return `${days[wib.getUTCDay()]}, ${wib.getUTCDate()} ${months[wib.getUTCMonth()]} ${wib.getUTCFullYear()} ${pad(wib.getUTCHours())}:${pad(wib.getUTCMinutes())}:${pad(wib.getUTCSeconds())} WIB`;
-}
+import { toWIBString } from "../shared/utils";
 
 const AI_HOSTNAME = "text.pollinations.ai";
 const AI_PATH = "/v1/chat/completions";
@@ -439,12 +430,13 @@ class AIService {
     try {
       const response = await callPollinationsAI([{ role: "user", content: userMsg }]);
 
-      if (!response) {
-        console.warn("[AIService] Empty response for signal recommendation");
-        return;
-      }
+      const clean = response
+        ? stripMarkdown(response)
+        : `Sinyal ${direction} XAUUSD terdeteksi — Entry: ${signal.entryPrice.toFixed(2)}, SL: ${signal.stopLoss.toFixed(2)}, TP1: ${signal.takeProfit.toFixed(2)}${signal.takeProfit2 ? `, TP2: ${signal.takeProfit2.toFixed(2)}` : ""}. AI Advisor tidak dapat memberikan analisis mendalam saat ini. Pantau level-level tersebut dan kelola risiko dengan disiplin.`;
 
-      const clean = stripMarkdown(response);
+      if (!response) {
+        console.warn("[AIService] Empty response for signal recommendation — using fallback");
+      }
 
       this.addToHistory("user", userMsg);
       this.addToHistory("assistant", clean);

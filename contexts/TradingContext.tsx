@@ -20,18 +20,9 @@ import {
   sendSLAlert,
 } from "@/services/NotificationService";
 import { playSignalSound, unlockAudioContext } from "@/services/SoundService";
+import { toWIBString, DERIV_WS_URL as SHARED_WS_URL } from "@/shared/utils";
 
 const BACKGROUND_FETCH_TASK = "libartin-bg-fetch";
-
-// ─── WIB Timezone Helper (UTC+7) ──────────────────────────────────────────────
-function toWIBString(date: Date): string {
-  const WIB_OFFSET = 7 * 60 * 60 * 1000;
-  const wib = new Date(date.getTime() + WIB_OFFSET);
-  const pad = (n: number) => String(n).padStart(2, "0");
-  const days = ["Min", "Sen", "Sel", "Rab", "Kam", "Jum", "Sab"];
-  const months = ["Jan", "Feb", "Mar", "Apr", "Mei", "Jun", "Jul", "Agu", "Sep", "Okt", "Nov", "Des"];
-  return `${days[wib.getUTCDay()]}, ${wib.getUTCDate()} ${months[wib.getUTCMonth()]} ${wib.getUTCFullYear()} ${pad(wib.getUTCHours())}:${pad(wib.getUTCMinutes())}:${pad(wib.getUTCSeconds())} WIB`;
-}
 
 if (Platform.OS !== "web") {
   TaskManager.defineTask(BACKGROUND_FETCH_TASK, async () => {
@@ -161,7 +152,7 @@ interface TradingContextValue {
 
 const TradingContext = createContext<TradingContextValue | null>(null);
 
-const DERIV_WS_URL = "wss://ws.derivws.com/websockets/v3?app_id=114791";
+const DERIV_WS_URL = SHARED_WS_URL;
 const SYMBOL = "frxXAUUSD";
 
 // M15 — structure: EMA50/200, swing detection, Fibonacci zones
@@ -530,12 +521,37 @@ export function TradingProvider({ children }: { children: ReactNode }) {
       // Sinyal pending akan dilanjutkan monitoring oleh server, client hanya membaca hasilnya
       if (sigRaw) {
         try {
-          const allCached = JSON.parse(sigRaw) as TradingSignal[];
+          const parsed = JSON.parse(sigRaw);
+          if (!Array.isArray(parsed)) throw new Error("Cache sinyal bukan array");
+          // Validasi schema: setiap sinyal harus punya field wajib
+          const isValidSignal = (s: unknown): s is TradingSignal => {
+            if (!s || typeof s !== "object") return false;
+            const sig = s as Record<string, unknown>;
+            return (
+              typeof sig.id === "string" &&
+              typeof sig.pair === "string" &&
+              typeof sig.entryPrice === "number" &&
+              typeof sig.stopLoss === "number" &&
+              typeof sig.takeProfit === "number" &&
+              (sig.trend === "Bullish" || sig.trend === "Bearish")
+            );
+          };
+          const allCached = parsed.filter(isValidSignal);
+          if (allCached.length < parsed.length) {
+            console.warn(`[TradingContext] Cache sinyal: ${parsed.length - allCached.length} item tidak valid dibuang`);
+          }
           setSignalHistory(allCached);
           allCached.forEach((s) => savedSignalKeys.current.add(s.id));
           const pendingCount = allCached.filter((s) => !s.outcome || s.outcome === "pending").length;
           console.log(`[TradingContext] Loaded ${allCached.length} signals from cache (${pendingCount} pending akan dilanjutkan server)`);
-        } catch {}
+          if (allCached.length < parsed.length) {
+            // Tulis ulang cache yang sudah divalidasi
+            AsyncStorage.setItem(STORAGE_KEY_SIGNALS, JSON.stringify(allCached)).catch(() => {});
+          }
+        } catch (e) {
+          console.warn("[TradingContext] Cache sinyal corrupt/incompatible — hapus cache lama:", (e as Error).message);
+          AsyncStorage.removeItem(STORAGE_KEY_SIGNALS).catch(() => {});
+        }
       }
 
       // Langkah 1.5: Restore active pending signal dari backend jika ada
@@ -740,6 +756,9 @@ export function TradingProvider({ children }: { children: ReactNode }) {
               setActiveSignal((prev) => {
                 if (prev && prev.outcome === "pending") return prev;
                 if (resolvedSignalKeysRef.current.has(data.signal!.id)) return prev;
+                // Jangan restore sinyal yang berlawanan dengan trend M15 aktif saat ini
+                // Trend bisa dibaca dari state saat ini via closure — tapi trend state
+                // bisa stale di closure, jadi cukup mengandalkan server filter yang sudah aman.
                 console.log(`[TradingContext] Periodic sync: restored pending signal ${data.signal!.id}`);
                 savedSignalKeys.current.add(data.signal!.id);
                 return data.signal!;
@@ -1068,10 +1087,19 @@ export function TradingProvider({ children }: { children: ReactNode }) {
   // Masing-masing update mandiri ketika struktur swing berubah.
   const [bullFibLevels, setBullFibLevels] = useState<FibLevels | null>(null);
   const [bearFibLevels, setBearFibLevels] = useState<FibLevels | null>(null);
-  const [fibTrend, setFibTrend] = useState<"Bullish" | "Bearish" | null>(null);
+  // lastSwingFibTrendRef: arah impulse swing terakhir (untuk fallback saat No Trade/Loading)
+  const lastSwingFibTrendRef = useRef<"Bullish" | "Bearish" | null>(null);
   const [currentAnchorEpoch, setCurrentAnchorEpoch] = useState<number | null>(null);
   const lastBullSwingRef = useRef<{ anchorEpoch: number; pairValue: number } | null>(null);
   const lastBearSwingRef = useRef<{ anchorEpoch: number; pairValue: number } | null>(null);
+
+  // fibTrend: selalu mencerminkan trend M15 live (EMA50).
+  // Fallback ke arah swing terakhir hanya jika trend M15 No Trade/Loading.
+  const fibTrend = useMemo((): "Bullish" | "Bearish" | null => {
+    if (trend === "Bullish") return "Bullish";
+    if (trend === "Bearish") return "Bearish";
+    return lastSwingFibTrendRef.current;
+  }, [trend]);
 
   useEffect(() => {
     if (m15Candles.length < EMA50_PERIOD) {
@@ -1096,7 +1124,7 @@ export function TradingProvider({ children }: { children: ReactNode }) {
         setBullFibLevels(calcFib(swingHigh, swingLow, "Bullish"));
         if (anchorChanged && (!swings.bearish || anchorEpoch >= (swings.bearish?.anchorEpoch ?? 0))) {
           setCurrentAnchorEpoch(anchorEpoch);
-          setFibTrend("Bullish");
+          lastSwingFibTrendRef.current = "Bullish";
         }
       }
     } else {
@@ -1116,7 +1144,7 @@ export function TradingProvider({ children }: { children: ReactNode }) {
         setBearFibLevels(calcFib(swingHigh, swingLow, "Bearish"));
         if (anchorChanged && (!swings.bullish || anchorEpoch >= (swings.bullish?.anchorEpoch ?? 0))) {
           setCurrentAnchorEpoch(anchorEpoch);
-          setFibTrend("Bearish");
+          lastSwingFibTrendRef.current = "Bearish";
         }
       }
     } else {
@@ -1286,12 +1314,17 @@ export function TradingProvider({ children }: { children: ReactNode }) {
     const bearSig = bearFibLevels ? tryDetect(bearFibLevels, "Bearish") : null;
 
     if (bullSig && bearSig) {
+      // Jika keduanya valid, prioritaskan berdasarkan trend M15 aktif (EMA50 gate),
+      // bukan recency anchor — konsistensi arah lebih penting.
+      if (trend === "Bullish") return bullSig;
+      if (trend === "Bearish") return bearSig;
+      // No Trade / Loading — ambil yang anchorEpoch-nya lebih baru sebagai fallback
       const bullAnchor = lastBullSwingRef.current?.anchorEpoch ?? 0;
       const bearAnchor = lastBearSwingRef.current?.anchorEpoch ?? 0;
       return bearAnchor >= bullAnchor ? bearSig : bullSig;
     }
     return bullSig ?? bearSig;
-  }, [bullFibLevels, bearFibLevels, atr, m5Candles, m15Candles, balance, marketState]);
+  }, [bullFibLevels, bearFibLevels, atr, m5Candles, m15Candles, balance, marketState, trend]);
 
   useEffect(() => {
     if (currentSignal) {
@@ -1312,6 +1345,24 @@ export function TradingProvider({ children }: { children: ReactNode }) {
       return prev;
     });
   }, [currentAnchorEpoch]);
+
+  // Invalidasi activeSignal di frontend jika arahnya berlawanan dengan trend M15 aktif.
+  // Ini sinkronisasi sisi client dari invalidasi yang sama yang dilakukan server.
+  // Hanya berlaku untuk sinyal pending — sinyal win/loss tetap dipertahankan untuk UI.
+  useEffect(() => {
+    if (trend !== "Bullish" && trend !== "Bearish") return;
+    setActiveSignal((prev) => {
+      if (!prev || prev.outcome === "win" || prev.outcome === "loss") return prev;
+      if (
+        (prev.trend === "Bullish" && trend === "Bearish") ||
+        (prev.trend === "Bearish" && trend === "Bullish")
+      ) {
+        console.log(`[TradingContext] ActiveSignal ${prev.id} (${prev.trend}) dibatalkan — trend M15 berbalik ke ${trend}`);
+        return null;
+      }
+      return prev;
+    });
+  }, [trend]);
 
   // ─── Notify when a NEW signal appears ─────────────────────────────────────
   const prevSignalIdRef = useRef<string | null>(null);

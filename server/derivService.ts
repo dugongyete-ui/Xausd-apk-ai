@@ -2,16 +2,7 @@ import WebSocket from "ws";
 import https from "https";
 import { aiService } from "./aiService";
 import { loadSignals, saveSignals, clearAllSignals } from "./signalStore";
-
-// ─── WIB Timezone Helper (UTC+7) ──────────────────────────────────────────────
-function toWIBString(date: Date): string {
-  const WIB_OFFSET = 7 * 60 * 60 * 1000;
-  const wib = new Date(date.getTime() + WIB_OFFSET);
-  const pad = (n: number) => String(n).padStart(2, "0");
-  const days = ["Min", "Sen", "Sel", "Rab", "Kam", "Jum", "Sab"];
-  const months = ["Jan", "Feb", "Mar", "Apr", "Mei", "Jun", "Jul", "Agu", "Sep", "Okt", "Nov", "Des"];
-  return `${days[wib.getUTCDay()]}, ${wib.getUTCDate()} ${months[wib.getUTCMonth()]} ${wib.getUTCFullYear()} ${pad(wib.getUTCHours())}:${pad(wib.getUTCMinutes())}:${pad(wib.getUTCSeconds())} WIB`;
-}
+import { toWIBString, DERIV_WS_URL as SHARED_WS_URL } from "../shared/utils";
 
 // ─── Expo Push Notification API ───────────────────────────────────────────────
 const EXPO_PUSH_URL = "exp.host";
@@ -148,7 +139,7 @@ export interface MarketStateSnapshot {
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
-const DERIV_WS_URL = "wss://ws.derivws.com/websockets/v3?app_id=114791";
+const DERIV_WS_URL = SHARED_WS_URL;
 const SYMBOL = "frxXAUUSD";
 const M15_GRAN = 900;
 const M15_COUNT = 300;
@@ -450,6 +441,8 @@ class DerivService {
 
   // fibTrend = arah sinyal aktif terakhir (untuk snapshot/display)
   private fibTrend: "Bullish" | "Bearish" | null = null;
+  // ID sinyal yang dibatalkan karena trend berbalik — tidak boleh di-resurrect
+  private cancelledSignalIds: Set<string> = new Set();
   private signalHistory: TradingSignal[] = (() => {
     const s = loadSignals();
     return s;
@@ -735,16 +728,43 @@ class DerivService {
       this.bearFibLevels  = null;
     }
 
+    // ── Invalidasi currentSignal jika trend M15 berbalik arah ─────────────
+    // Jika sinyal aktif berlawanan dengan trend EMA50 M15 saat ini, batalkan.
+    // Tambahkan ke cancelledSignalIds agar tidak bisa di-resurrect oleh fallback.
+    const liveTrend = getTrend(this.m15Candles);
+    if (this.currentSignal && (liveTrend === "Bullish" || liveTrend === "Bearish")) {
+      const signalDir = this.currentSignal.trend;
+      if (
+        (signalDir === "Bullish" && liveTrend === "Bearish") ||
+        (signalDir === "Bearish" && liveTrend === "Bullish")
+      ) {
+        console.log(
+          `[DerivService] Sinyal aktif ${signalDir} (${this.currentSignal.id}) dibatalkan — trend M15 berbalik ke ${liveTrend}`
+        );
+        this.cancelledSignalIds.add(this.currentSignal.id);
+        this.currentSignal = null;
+        this.fibTrend = liveTrend;
+      }
+    }
+
     // ── Evaluasi sinyal kedua arah ────────────────────────────────────────
     const bullSignal = this.detectSignalForDirection("Bullish");
     const bearSignal = this.detectSignalForDirection("Bearish");
 
-    // Pilih sinyal yang valid. Jika keduanya valid, ambil yang paling baru
-    // (berdasarkan epoch candle M5 konfirmasi).
+    // Pilih sinyal yang valid.
+    // Jika keduanya valid, pilih berdasarkan trend M15 aktif (EMA50 gate),
+    // bukan epoch terbaru — konsistensi arah lebih penting dari recency.
     if (bullSignal && bearSignal) {
-      const bullEpoch = this.lastBullSignaledEpoch ?? 0;
-      const bearEpoch = this.lastBearSignaledEpoch ?? 0;
-      this.currentSignal = bullEpoch >= bearEpoch ? bullSignal : bearSignal;
+      if (liveTrend === "Bullish") {
+        this.currentSignal = bullSignal;
+      } else if (liveTrend === "Bearish") {
+        this.currentSignal = bearSignal;
+      } else {
+        // No Trade / Loading — ambil yang anchorEpoch-nya lebih baru
+        const bullAnchor = this.lastBullSwing?.anchorEpoch ?? 0;
+        const bearAnchor = this.lastBearSwing?.anchorEpoch ?? 0;
+        this.currentSignal = bearAnchor >= bullAnchor ? bearSignal : bullSignal;
+      }
     } else {
       this.currentSignal = bullSignal ?? bearSignal ?? null;
     }
@@ -1015,10 +1035,17 @@ class DerivService {
       winRate: resolved > 0 ? Math.round((wins / resolved) * 100) : 0,
     };
 
+    // fibTrend: reflect live M15 trend so UI & AI always see current market direction.
+    // Falls back to last known signal direction if trend is No Trade / Loading.
+    const liveFibTrend: "Bullish" | "Bearish" | null =
+      trend === "Bullish" ? "Bullish"
+      : trend === "Bearish" ? "Bearish"
+      : this.fibTrend;
+
     return {
       currentPrice: this.currentPrice,
       trend,
-      fibTrend: this.fibTrend,
+      fibTrend: liveFibTrend,
       ema50,
       ema20m5,
       ema50m5,
@@ -1040,9 +1067,19 @@ class DerivService {
     return this.signalHistory;
   }
 
-  // Kembalikan sinyal pending terbaru dari history (untuk fallback restart)
+  // Kembalikan sinyal pending terbaru dari history (untuk fallback restart).
+  // Filter: tidak termasuk sinyal yang sudah dibatalkan karena trend berbalik,
+  // dan hanya sinyal yang arahnya sesuai dengan trend M15 aktif saat ini.
   getLatestPendingSignal(): TradingSignal | null {
-    const pending = this.signalHistory.filter((s) => s.outcome === "pending");
+    const liveTrend = getTrend(this.m15Candles);
+    const pending = this.signalHistory.filter((s) => {
+      if (s.outcome !== "pending") return false;
+      if (this.cancelledSignalIds.has(s.id)) return false;
+      // Hanya izinkan sinyal yang searah dengan trend M15 aktif
+      if (liveTrend === "Bullish" && s.trend !== "Bullish") return false;
+      if (liveTrend === "Bearish" && s.trend !== "Bearish") return false;
+      return true;
+    });
     if (pending.length === 0) return null;
     return pending.sort(
       (a, b) => new Date(b.timestampUTC).getTime() - new Date(a.timestampUTC).getTime()

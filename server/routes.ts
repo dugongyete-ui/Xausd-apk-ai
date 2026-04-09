@@ -12,10 +12,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
     res.json(derivService.getSignalHistory());
   });
 
-  // GET /api/current-signal — returns the most recent signal (pending or just resolved)
+  // GET /api/current-signal — returns the active signal (pending or just resolved).
   // Used by frontend polling to track active trade state and receive TP/SL outcomes.
   // Fallback: jika currentSignal null (mis. setelah restart sebelum candle baru),
-  // kembalikan sinyal pending terbaru dari history yang sudah di-persist.
+  // kembalikan sinyal pending terbaru dari history — hanya jika searah dengan
+  // trend M15 aktif dan belum dibatalkan karena trend reversal.
+  // Ini mencegah sinyal yang sudah dibatalkan muncul kembali di frontend.
   app.get("/api/current-signal", (_req: Request, res: Response) => {
     const snapshot = derivService.getSnapshot();
     const signal = snapshot.currentSignal ?? derivService.getLatestPendingSignal();

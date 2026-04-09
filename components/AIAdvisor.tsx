@@ -136,14 +136,25 @@ export function AIAdvisor() {
   const [sending, setSending] = useState(false);
   const [aiReady, setAiReady] = useState(true);
   const [expanded, setExpanded] = useState(false);
+  const [connectionError, setConnectionError] = useState(false);
   const scrollRef = useRef<ScrollView>(null);
   const lastMsgCountRef = useRef(0);
+  const fetchFailCountRef = useRef(0);
 
   const fetchMessages = useCallback(async () => {
-    if (!BACKEND_URL) return;
+    if (!BACKEND_URL) {
+      setConnectionError(true);
+      return;
+    }
     try {
       const res = await fetch(`${BACKEND_URL}/api/ai/messages?limit=20`);
-      if (!res.ok) return;
+      if (!res.ok) {
+        fetchFailCountRef.current += 1;
+        if (fetchFailCountRef.current >= 3) setConnectionError(true);
+        return;
+      }
+      fetchFailCountRef.current = 0;
+      setConnectionError(false);
       const data = await res.json() as { messages: AIMessage[]; ready: boolean };
       setMessages(data.messages ?? []);
       setAiReady(data.ready ?? true);
@@ -154,7 +165,10 @@ export function AIAdvisor() {
           setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 100);
         }
       }
-    } catch {}
+    } catch {
+      fetchFailCountRef.current += 1;
+      if (fetchFailCountRef.current >= 3) setConnectionError(true);
+    }
   }, [expanded]);
 
   useEffect(() => {
@@ -286,6 +300,10 @@ export function AIAdvisor() {
           <Text style={styles.collapsedPreview} numberOfLines={2}>
             {latestAI.content}
           </Text>
+        ) : connectionError ? (
+          <Text style={[styles.collapsedEmpty, { color: C.red }]}>
+            AI Advisor tidak dapat terhubung. Ketuk untuk detail.
+          </Text>
         ) : (
           <Text style={styles.collapsedEmpty}>
             AI akan otomatis memberikan analisis saat sinyal terdeteksi.
@@ -322,7 +340,16 @@ export function AIAdvisor() {
         showsVerticalScrollIndicator={false}
         onContentSizeChange={() => scrollRef.current?.scrollToEnd({ animated: false })}
       >
-        {visibleMessages.length === 0 && (
+        {visibleMessages.length === 0 && connectionError && (
+          <View style={styles.emptyState}>
+            <Ionicons name="cloud-offline-outline" size={32} color={C.red} />
+            <Text style={[styles.emptyTitle, { color: C.red }]}>AI Advisor Offline</Text>
+            <Text style={styles.emptyText}>
+              Tidak dapat terhubung ke server AI. Pastikan koneksi internet aktif dan coba lagi. Sinyal trading tetap berjalan normal di tab lain.
+            </Text>
+          </View>
+        )}
+        {visibleMessages.length === 0 && !connectionError && (
           <View style={styles.emptyState}>
             <Ionicons name="sparkles-outline" size={32} color={C.textDim} />
             <Text style={styles.emptyTitle}>AI Siap Bertugas</Text>

@@ -396,8 +396,10 @@ async function runBacktest() {
       const atrM15 = calcATR(m15Slice, ATR_PERIOD);
       if (atrM15 <= 0) continue;
 
-      // Zone check
+      // Minimum Fibonacci range: swing harus setidaknya 1× ATR M15 (sinkron dengan live engine)
       const range = Math.abs(fib.swingHigh - fib.swingLow);
+      if (range < atrM15 * 1.0) continue;
+
       let lo: number, hi: number;
       if (dir === "Bearish") {
         lo = fib.swingLow + range * 0.50;
@@ -429,6 +431,21 @@ async function runBacktest() {
       const isRejection = checkRejection(closedM5, dir, fib);
       const isEngulfing = checkEngulfing(prevM5, closedM5, dir);
       if (!isRejection && !isEngulfing) continue;
+
+      // Engulfing confluence gate — sinkron dengan live engine:
+      // Engulfing WAJIB near round number (.25/.50) ATAU near swing point M5 terdekat
+      if (isEngulfing && !isRejection) {
+        const entryRef = closedM5.close;
+        const nearRoundForEngulf = [25, 50].some((step) => {
+          const nearest = Math.round(entryRef / step) * step;
+          return Math.abs(entryRef - nearest) <= 2;
+        });
+        const recentM5slice = m5Slice.slice(-12, -2);
+        const nearSwingM5 = [...recentM5slice.map((c) => c.high), ...recentM5slice.map((c) => c.low)].some(
+          (p) => Math.abs(p - entryRef) <= 3
+        );
+        if (!nearRoundForEngulf && !nearSwingM5) continue;
+      }
 
       const confirmationType = isEngulfing ? "engulfing" : "rejection";
       const sl = dir === "Bullish" ? fib.swingLow : fib.swingHigh;
@@ -760,7 +777,10 @@ function simulateBlock(
       const atrM15 = calcATR(m15Slice, ATR_PERIOD);
       if (atrM15 <= 0) continue;
 
+      // Minimum Fibonacci range filter (sinkron dengan live engine)
       const range = Math.abs(fib.swingHigh - fib.swingLow);
+      if (range < atrM15 * 1.0) continue;
+
       let lo: number, hi: number;
       if (dir === "Bearish") {
         lo = fib.swingLow + range * 0.50;
@@ -787,6 +807,20 @@ function simulateBlock(
       const isRejection = checkRejection(closedM5, dir, fib);
       const isEngulfing  = checkEngulfing(prevM5, closedM5, dir);
       if (!isRejection && !isEngulfing) continue;
+
+      // Engulfing confluence gate (sinkron dengan live engine)
+      if (isEngulfing && !isRejection) {
+        const entryRefWF = closedM5.close;
+        const nearRoundWF = [25, 50].some((step) => {
+          const nearest = Math.round(entryRefWF / step) * step;
+          return Math.abs(entryRefWF - nearest) <= 2;
+        });
+        const recentWF = m5Slice.slice(-12, -2);
+        const nearSwingWF = [...recentWF.map((c) => c.high), ...recentWF.map((c) => c.low)].some(
+          (p) => Math.abs(p - entryRefWF) <= 3
+        );
+        if (!nearRoundWF && !nearSwingWF) continue;
+      }
 
       const confirmationType = isEngulfing ? "engulfing" : "rejection";
       const sl = dir === "Bullish" ? fib.swingLow : fib.swingHigh;

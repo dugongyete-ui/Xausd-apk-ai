@@ -187,35 +187,43 @@ export default function SettingsScreen() {
           <View style={styles.card}>
             <StrategyRule
               title="Data Source"
-              detail="Deriv WebSocket · XAUUSD · M15: 300 candle struktur · M5: 100 candle konfirmasi"
+              detail="Deriv WebSocket · XAUUSD · M15: 300 candle struktur · M5: 200 candle konfirmasi"
             />
             <StrategyRule
-              title="Trend Filter"
-              detail="Price > EMA50 = Bullish · Price < EMA50 = Bearish (EMA50 M15)"
+              title="Trend Filter M15"
+              detail="EMA50 M15: Price > EMA50 = Bullish · Price < EMA50 = Bearish. Wajib terpenuhi sebelum entry"
+            />
+            <StrategyRule
+              title="Trend Filter M5"
+              detail="EMA20 M5 > EMA50 M5 = BUY valid · EMA20 M5 < EMA50 M5 = SELL valid (micro-trend alignment)"
             />
             <StrategyRule
               title="Swing Detection"
-              detail="Fractal method: 5-candle fractal (2L + pivot + 2R)"
+              detail="5-bar fractal: swing high/low valid jika menonjol dari 2 candle di kiri & kanan. Min range: 1× ATR M15"
             />
             <StrategyRule
               title="Entry Zone"
-              detail="Price must be within 61.8% — 78.6% Fibonacci band"
+              detail="Zona 50%–88.6% Fibonacci retracement. Candle M5 harus menyentuh zona ini (Golden Zone: 61.8%–78.6%)"
             />
             <StrategyRule
-              title="Candle Confirmation"
-              detail="BUY: Bullish close + lower wick > body · SELL: Bearish close + upper wick > body"
+              title="Candle Konfirmasi M5"
+              detail="Pin Bar (wick > body × 0.8) ATAU Engulfing (body ≥ 70% candle sebelumnya). Hanya candle CLOSED"
             />
             <StrategyRule
               title="Stop Loss"
-              detail="SL = Swing High (bearish) · Swing Low (bullish) — level 100%/0%"
+              detail="SL = Swing Low (BUY) · Swing High (SELL). Min jarak SL: 0.3× ATR M15 atau 2 poin"
             />
             <StrategyRule
               title="Take Profit"
-              detail="TP = Swing Low (bearish) · Swing High (bullish) — level 0%/100%"
+              detail="TP1 = 1:1 RR · TP2 = Fib -27.2% extension + 0.5× ATR (capped 3× ATR). Breakeven setelah TP1 hit"
             />
             <StrategyRule
-              title="Trade Filter"
-              detail="Max 1 active signal · No entry on low ATR or extreme spread"
+              title="Session Filter"
+              detail="Hanya London (07:00–16:00 UTC) dan New York (13:00–22:00 UTC). Spike zone 30 menit pertama diabaikan"
+            />
+            <StrategyRule
+              title="Perlindungan"
+              detail="3 loss berturut = cooldown 4 jam · 1 sinyal aktif per arah · Expiry sinyal 5 jam"
               isLast
             />
           </View>

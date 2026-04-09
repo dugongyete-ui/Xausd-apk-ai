@@ -1,9 +1,10 @@
-import https from "https";
+import { CohereClientV2 } from "cohere-ai";
 import type { TradingSignal, MarketStateSnapshot } from "./derivService";
 import { toWIBString } from "../shared/utils";
 
-const AI_HOSTNAME = "text.pollinations.ai";
-const AI_PATH = "/v1/chat/completions";
+const cohereClient = new CohereClientV2({
+  token: process.env.COHERE_API_KEY ?? "",
+});
 
 export interface AIMessage {
   id: string;
@@ -122,93 +123,46 @@ Gunakan angka (1, 2, 3) jika perlu urutan.
 Untuk analisis sinyal aktif: maksimal 200 kata, padat, informasi utama di paragraf pertama.
 Untuk penjelasan konsep atau pertanyaan kompleks: boleh lebih panjang, tapi setiap kalimat harus memberi nilai tambah.`;
 
-// ─── Call AI API (https native, with retry) ───────────────────────────────────
-function callPollinationsAI(
+// ─── Call Cohere AI (with retry) ──────────────────────────────────────────────
+async function callCohereAI(
   messages: Array<{ role: string; content: string }>,
   attempt = 0
 ): Promise<string> {
-  const payload = JSON.stringify({
-    model: "openai",
-    stream: false,
-    messages: [{ role: "system", content: SYSTEM_PROMPT }, ...messages],
-  });
+  const cohereMessages = messages.map((m) => ({
+    role: m.role as "user" | "assistant",
+    content: m.content,
+  }));
 
-  return new Promise((resolve) => {
-    const req = https.request(
-      {
-        hostname: AI_HOSTNAME,
-        path: AI_PATH,
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Content-Length": Buffer.byteLength(payload),
-          "User-Agent": "Mozilla/5.0 LIBARTIN-Trading-App",
-          "Accept": "application/json",
-        },
-      },
-      (res) => {
-        let raw = "";
-        res.on("data", (chunk) => { raw += chunk; });
-        res.on("end", async () => {
-          const status = res.statusCode ?? 0;
-          if (status >= 400) {
-            console.error(`[AIService] HTTP ${status}: ${raw.slice(0, 200)}`);
-            if (attempt === 0) {
-              console.log("[AIService] Retrying after HTTP error...");
-              await new Promise((r) => setTimeout(r, 3000));
-              resolve(callPollinationsAI(messages, 1));
-            } else {
-              resolve("");
-            }
-            return;
-          }
-          try {
-            const result = JSON.parse(raw) as {
-              choices?: Array<{ message?: { content?: string; reasoning_content?: string } }>;
-            };
-            const msg = result?.choices?.[0]?.message;
-            const content = msg?.content ?? msg?.reasoning_content ?? "";
-            if (!content && attempt === 0) {
-              console.warn("[AIService] Empty content, retrying...");
-              await new Promise((r) => setTimeout(r, 2000));
-              resolve(callPollinationsAI(messages, 1));
-              return;
-            }
-            resolve(stripMarkdown(content.trim()));
-          } catch (parseErr) {
-            console.error("[AIService] Parse error:", raw.slice(0, 200));
-            if (attempt === 0) {
-              await new Promise((r) => setTimeout(r, 2000));
-              resolve(callPollinationsAI(messages, 1));
-            } else {
-              resolve("");
-            }
-          }
-        });
-      }
-    );
-
-    req.on("error", async (e) => {
-      console.error("[AIService] Request error:", e.message);
-      if (attempt === 0) {
-        await new Promise((r) => setTimeout(r, 2000));
-        resolve(callPollinationsAI(messages, 1));
-      } else {
-        resolve("");
-      }
+  try {
+    const response = await cohereClient.chat({
+      model: "command-r-plus",
+      messages: [
+        { role: "system", content: SYSTEM_PROMPT },
+        ...cohereMessages,
+      ],
     });
 
-    // 35s per attempt — keeps total (retry included) well within frontend's 80s timeout
-    req.setTimeout(35000, () => {
-      console.error("[AIService] Request timeout (35s)");
-      req.destroy();
-      // Do NOT retry on timeout — fail fast so frontend doesn't abort first
-      resolve("");
-    });
+    const content =
+      response.message?.content?.[0]?.type === "text"
+        ? response.message.content[0].text
+        : "";
 
-    req.write(payload);
-    req.end();
-  });
+    if (!content && attempt === 0) {
+      console.warn("[AIService] Empty content from Cohere, retrying...");
+      await new Promise((r) => setTimeout(r, 2000));
+      return callCohereAI(messages, 1);
+    }
+
+    return stripMarkdown(content.trim());
+  } catch (err) {
+    const errMsg = (err as Error).message ?? "unknown error";
+    console.error(`[AIService] Cohere error (attempt ${attempt}): ${errMsg}`);
+    if (attempt === 0) {
+      await new Promise((r) => setTimeout(r, 3000));
+      return callCohereAI(messages, 1);
+    }
+    return "";
+  }
 }
 
 // ─── Server-side word streaming (simulate streaming from full response) ──────────
@@ -428,7 +382,7 @@ class AIService {
     console.log(`[AIService] Generating signal recommendation: ${direction} @ ${signal.entryPrice}`);
 
     try {
-      const response = await callPollinationsAI([{ role: "user", content: userMsg }]);
+      const response = await callCohereAI([{ role: "user", content: userMsg }]);
 
       const clean = response
         ? stripMarkdown(response)
@@ -485,7 +439,7 @@ class AIService {
     console.log(`[AIService] Generating outcome commentary: ${outcomeLabel}`);
 
     try {
-      const response = await callPollinationsAI(
+      const response = await callCohereAI(
         this.buildMessagesWithHistory(userMsg)
       );
 
@@ -543,7 +497,7 @@ class AIService {
       messages.push({ role: "user", content: userMessage });
     }
 
-    const response = await callPollinationsAI(messages);
+    const response = await callCohereAI(messages);
 
     // Always pick a final reply — never leave displayMessages empty after a chat
     const clean = response
@@ -593,7 +547,7 @@ class AIService {
       messages.push({ role: "user", content: userMessage });
     }
 
-    callPollinationsAI(messages).then((fullResponse) => {
+    callCohereAI(messages).then((fullResponse) => {
       const clean = fullResponse.trim() || "Maaf, AI tidak dapat merespons saat ini.";
 
       this.addToHistory("user", userMessage);

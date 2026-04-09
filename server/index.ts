@@ -207,27 +207,52 @@ async function configureExpoAndLanding(app: express.Application) {
   app.use("/assets", express.static(path.resolve(process.cwd(), "assets")));
   app.use(express.static(path.resolve(process.cwd(), "static-build")));
 
-  // Proxy web browser requests to Expo web dev server (port 8081)
-  // Uses path filter to exclude /api routes
-  try {
-    const { createProxyMiddleware } = await import("http-proxy-middleware");
-    const proxy = createProxyMiddleware({
-      target: "http://localhost:8081",
-      changeOrigin: true,
-      ws: false,
-      on: {
-        error: (_err: unknown, _req: unknown, res: unknown) => {
-          (res as import("express").Response).status(502).send("Expo web server not ready yet");
+  const isProduction = process.env.NODE_ENV === "production";
+
+  if (isProduction) {
+    // In production: serve the Expo web export static files from dist/
+    const distPath = path.resolve(process.cwd(), "dist");
+    if (fs.existsSync(distPath)) {
+      app.use(express.static(distPath));
+      // SPA fallback: all non-API, non-static routes serve index.html
+      app.use((req: Request, res: Response, next: NextFunction) => {
+        if (req.path.startsWith("/api")) return next();
+        const indexPath = path.join(distPath, "index.html");
+        if (fs.existsSync(indexPath)) {
+          return res.sendFile(indexPath);
+        }
+        next();
+      });
+      log("Production mode: serving Expo web static files from dist/");
+    } else {
+      log("WARNING: dist/ folder not found. Run 'npx expo export --platform web' during build.");
+    }
+  } else {
+    // In development: proxy web browser requests to Expo web dev server (port 8081)
+    try {
+      const { createProxyMiddleware } = await import("http-proxy-middleware");
+      const proxy = createProxyMiddleware({
+        target: "http://localhost:8081",
+        changeOrigin: true,
+        ws: false,
+        headers: {
+          origin: "http://localhost:8081",
+          host: "localhost:8081",
         },
-      },
-    });
-    app.use((req: Request, res: Response, next: NextFunction) => {
-      if (req.path.startsWith("/api")) return next();
-      return proxy(req, res, next);
-    });
-    log("Expo web proxy: forwarding non-api requests to port 8081");
-  } catch {
-    log("http-proxy-middleware not available, skipping web proxy");
+        on: {
+          error: (_err: unknown, _req: unknown, res: unknown) => {
+            (res as import("express").Response).status(502).send("Expo web server not ready yet");
+          },
+        },
+      });
+      app.use((req: Request, res: Response, next: NextFunction) => {
+        if (req.path.startsWith("/api")) return next();
+        return proxy(req, res, next);
+      });
+      log("Expo web proxy: forwarding non-api requests to port 8081");
+    } catch {
+      log("http-proxy-middleware not available, skipping web proxy");
+    }
   }
 
   log("Expo routing: Checking expo-platform header on / and /manifest");

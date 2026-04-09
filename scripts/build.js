@@ -496,6 +496,53 @@ function updateManifests(manifests, timestamp, baseUrl, assetsByHash) {
   console.log("Manifests updated");
 }
 
+async function buildExpoWeb(domain) {
+  console.log("Building Expo web export for browser access...");
+
+  return new Promise((resolve, reject) => {
+    const env = {
+      ...process.env,
+      EXPO_PUBLIC_DOMAIN: domain,
+    };
+
+    const webBuildProcess = spawn(
+      "npx",
+      ["expo", "export", "--platform", "web", "--output-dir", "dist"],
+      {
+        stdio: ["ignore", "pipe", "pipe"],
+        detached: false,
+        env,
+      },
+    );
+
+    if (webBuildProcess.stdout) {
+      webBuildProcess.stdout.on("data", (data) => {
+        const output = data.toString().trim();
+        if (output) console.log(`[Web Build] ${output}`);
+      });
+    }
+    if (webBuildProcess.stderr) {
+      webBuildProcess.stderr.on("data", (data) => {
+        const output = data.toString().trim();
+        if (output) console.error(`[Web Build Error] ${output}`);
+      });
+    }
+
+    webBuildProcess.on("close", (code) => {
+      if (code === 0) {
+        console.log("Expo web export complete → dist/");
+        resolve();
+      } else {
+        reject(new Error(`Expo web export failed with exit code ${code}`));
+      }
+    });
+
+    webBuildProcess.on("error", (err) => {
+      reject(new Error(`Failed to start Expo web export: ${err.message}`));
+    });
+  });
+}
+
 async function main() {
   console.log("Building static Expo Go deployment...");
 
@@ -546,11 +593,18 @@ async function main() {
   console.log("Updating manifests and creating landing page...");
   updateManifests(manifests, timestamp, baseUrl, assetsByHash);
 
+  // Kill metro before running expo export (both use port 8081)
+  if (metroProcess) {
+    console.log("Stopping Metro before web export...");
+    metroProcess.kill();
+    metroProcess = null;
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+  }
+
+  await buildExpoWeb(domain);
+
   console.log("Build complete! Deploy to:", baseUrl);
 
-  if (metroProcess) {
-    metroProcess.kill();
-  }
   process.exit(0);
 }
 

@@ -124,7 +124,8 @@ export function findSwings(
     dir: "up" | "down"
   ): boolean {
     const span = toIdx - fromIdx;
-    if (span < 3 || span > 40) return false;
+    // Minimum 5 candle (75 menit pada M15) agar impulse cukup bermakna
+    if (span < 5 || span > 40) return false;
     const range = Math.abs(toPrice - fromPrice);
     const minRange = atrM15 > 0 ? atrM15 * 0.3 : 5;
     if (range < minRange) return false;

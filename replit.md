@@ -107,6 +107,12 @@ Ketika HP dibuka kembali, app mengambil signal history dari backend — sudah ad
   - **Pending signal recovery on app open**: Endpoint baru `GET /api/current-signal` ditambahkan ke backend. Frontend (`TradingContext.tsx`) kini mem-fetch pending signal dari backend saat startup (Langkah 1.5) dan juga setiap 60 detik. Jika ada sinyal aktif di backend, `activeSignal` di frontend otomatis di-restore — tidak ada lagi "kosong" di dashboard saat buka app di tengah trade.
   - **Signal detection consistency**: Hapus filter M5 EMA20/EMA50 alignment dari frontend (`TradingContext.tsx`) karena backend tidak pernah punya filter ini. Sekarang frontend dan backend pakai kondisi yang sama: zone touch + candlestick pattern saja.
 
+- **2026-04-09 v4**: Audit & fix Fibonacci terlalu cepat berganti:
+  - **2-bar fractal** di `server/derivService.ts` dan `contexts/TradingContext.tsx`: swing high/low kini butuh 2 candle konfirmasi di kiri DAN kanan (sebelumnya hanya 1). Artinya swing baru baru dikonfirmasi setelah 30 menit (2 candle M15), bukan hanya 15 menit. Ini drastis mengurangi frekuensi redraw Fibonacci.
+  - **Span minimum 5 candle** (dari 3) di ketiga lokasi `findSwings` (`server/derivService.ts`, `contexts/TradingContext.tsx`, `shared/indicators.ts`). Impulse M15 minimal 75 menit (5 × 15 menit) agar dianggap valid — menghilangkan false swing dari gerakan singkat 45 menit.
+  - **pairChanged threshold 5%** di server dan context: Fibonacci hanya digambar ulang jika swing high/low baru berbeda ≥ 5% dari range impulse sebelumnya. Mencegah minor new high/low 1-2 pip memicu redraw garis lengkap.
+  - **Retracement check `runningExtreme`** di server: diperbaiki dari pengecekan static `fromPrice` ke dynamic `runningExtreme` (sama seperti shared/indicators.ts), lebih akurat mendeteksi retracement dalam impulse.
+
 - **2026-03-06 v3**: Bug fix — sinyal aktif tidak tampil di dashboard + sinkronisasi install script:
   - **Fix activeSignal tidak tampil**: `activeSignal` kini di-restore dari sinyal pending terbaru di history saat startup (dari cache lokal maupun dari server). Sebelumnya, efek `setActiveSignal(null)` yang dipicu perubahan `currentAnchorEpoch` menghapus sinyal sebelum sempat tampil.
   - **Fix anchor-change effect**: Efek yang memantau `currentAnchorEpoch` tidak lagi langsung menghapus `activeSignal`. Sinyal pending dipertahankan sampai TP/SL benar-benar tercapai. Hanya sinyal yang sudah resolved (win/loss) yang dihapus.

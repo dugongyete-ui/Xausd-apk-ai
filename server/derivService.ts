@@ -234,11 +234,23 @@ function findSwings(candles: Candle[], atrM15 = 0): { bullish: SwingResult | nul
 
   const swingHighs: number[] = [];
   const swingLows: number[] = [];
-  for (let i = 1; i < n - 1; i++) {
-    if (slice[i].high > slice[i - 1].high && slice[i].high > slice[i + 1].high) {
+  // 2-bar fractal: konfirmasi swing butuh 2 candle di kiri DAN 2 candle di kanan
+  // Lebih solid — swing baru dikonfirmasi setelah 30 menit (2 candle M15), bukan 15 menit
+  for (let i = 2; i < n - 2; i++) {
+    if (
+      slice[i].high > slice[i - 1].high &&
+      slice[i].high > slice[i - 2].high &&
+      slice[i].high > slice[i + 1].high &&
+      slice[i].high > slice[i + 2].high
+    ) {
       swingHighs.push(i);
     }
-    if (slice[i].low < slice[i - 1].low && slice[i].low < slice[i + 1].low) {
+    if (
+      slice[i].low < slice[i - 1].low &&
+      slice[i].low < slice[i - 2].low &&
+      slice[i].low < slice[i + 1].low &&
+      slice[i].low < slice[i + 2].low
+    ) {
       swingLows.push(i);
     }
   }
@@ -249,14 +261,22 @@ function findSwings(candles: Candle[], atrM15 = 0): { bullish: SwingResult | nul
     dir: "up" | "down"
   ): boolean {
     const span = toIdx - fromIdx;
-    if (span < 3 || span > 40) return false;             // 1b: 25 → 40
+    // Minimum 5 candle (75 menit pada M15) agar impulse cukup bermakna
+    if (span < 5 || span > 40) return false;
     const range = Math.abs(toPrice - fromPrice);
-    const minRange = atrM15 > 0 ? atrM15 * 0.3 : 5;    // 1c: ATR-relative
+    const minRange = atrM15 > 0 ? atrM15 * 0.3 : 5;
     if (range < minRange) return false;
 
+    // Gunakan runningExtreme agar retracement check lebih akurat
+    let runningExtreme = fromPrice;
     for (let j = fromIdx; j <= toIdx; j++) {
-      if (dir === "up" && slice[j].low < fromPrice - range * 0.30) return false;
-      if (dir === "down" && slice[j].high > fromPrice + range * 0.30) return false;
+      if (dir === "up") {
+        runningExtreme = Math.max(runningExtreme, slice[j].high);
+        if (slice[j].low < runningExtreme - range * 0.30) return false;
+      } else {
+        runningExtreme = Math.min(runningExtreme, slice[j].low);
+        if (slice[j].high > runningExtreme + range * 0.30) return false;
+      }
     }
 
     const mid = fromIdx + Math.floor(span / 2);
@@ -715,7 +735,14 @@ class DerivService {
     const last = dir === "Bullish" ? this.lastBullSwing : this.lastBearSwing;
 
     const anchorChanged = !last || last.anchorEpoch !== swing.anchorEpoch;
-    const pairChanged   = last && last.anchorEpoch === swing.anchorEpoch && last.pairValue !== pairValue;
+
+    // pairChanged hanya berlaku jika ekstensi cukup signifikan (>= 5% dari range impulse)
+    // Ini mencegah minor extension 1-2 pip menggambar ulang seluruh Fibonacci
+    const fibRange = swing.swingHigh - swing.swingLow;
+    const minExtension = fibRange * 0.05;
+    const pairChanged = last &&
+      last.anchorEpoch === swing.anchorEpoch &&
+      Math.abs(last.pairValue - pairValue) >= minExtension;
 
     if (!anchorChanged && !pairChanged) return false;
 

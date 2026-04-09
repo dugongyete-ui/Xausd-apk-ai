@@ -108,6 +108,7 @@ export interface TradingSignal {
   outcome?: "win" | "loss" | "pending";
   sessionTag?: "active" | "low_confidence";
   effectiveSL?: number;
+  confluence?: boolean;
 }
 
 export type TrendState = "Bullish" | "Bearish" | "No Trade" | "Loading";
@@ -944,6 +945,11 @@ class DerivService {
     const m5ATR = calcATR(this.m5Candles.slice(0, -1), ATR_PERIOD);
     if (m5ATR < atrM15 * M5_ATR_MIN_RATIO) return null;
 
+    // M5 body filter: reject doji/indecision candles where body < 30% of full range
+    const m5FullRange = closedM5.high - closedM5.low;
+    const m5Body = Math.abs(closedM5.close - closedM5.open);
+    if (m5FullRange > 0 && m5Body < m5FullRange * 0.3) return null;
+
     // Konfirmasi candlestick: Pin Bar Rejection atau Engulfing
     const isRejection = checkRejection(closedM5, trend, fib);
     const isEngulfing  = checkEngulfing(prevM5, closedM5, trend);
@@ -968,30 +974,39 @@ class DerivService {
     if (slDistance < atrM15 * 0.3) return null;
     if (slDistance < 2.0) return null;
 
-    // ── TP1: Fibonacci 127.2% extension dari swing impulse (struktur-anchored) ──
-    // Level 127.2% = swingHigh + range × 0.272 (Bullish) / swingLow - range × 0.272 (Bearish)
-    // Atau 1.0× ATR M15 dari entry jika lebih konservatif
-    const tp1FibLevel = trend === "Bearish"
-      ? fib.swingLow - range * 0.272   // 127.2% ext: bearish impuls turun
-      : fib.swingHigh + range * 0.272; // 127.2% ext: bullish impuls naik
-    const tp1AtrLevel = trend === "Bearish"
-      ? entryPrice - atrM15 * 1.0
-      : entryPrice + atrM15 * 1.0;
-    // Ambil target yang lebih konservatif (lebih dekat ke entry)
-    const tp1 = trend === "Bearish"
-      ? Math.max(tp1FibLevel, tp1AtrLevel) // lebih besar = lebih dekat untuk SELL
-      : Math.min(tp1FibLevel, tp1AtrLevel); // lebih kecil = lebih dekat untuk BUY
-    const tp1Dist = Math.abs(tp1 - entryPrice);
-
     // ── Task 3: TP2 = Fib 127.2% + 0.5× ATR M15 ──────────────────────────────
     // More reachable than previous 161.8% for M5 scalping conditions
     const tp2 = trend === "Bearish"
       ? fib.swingLow - range * 0.272 - atrM15 * 0.5   // 127.2% + 0.5 ATR below entry
       : fib.swingHigh + range * 0.272 + atrM15 * 0.5; // 127.2% + 0.5 ATR above entry
+
+    // ── TP1: minimum 1:1 RR from entry (SL distance), clamped to not exceed TP2 ──
+    const tp1Raw = trend === "Bearish" ? entryPrice - slDistance : entryPrice + slDistance;
+    const tp1 = trend === "Bearish"
+      ? Math.max(tp1Raw, tp2)  // for SELL: tp1 must not go below tp2 (tp2 is lower)
+      : Math.min(tp1Raw, tp2); // for BUY:  tp1 must not exceed tp2 (tp2 is higher)
+
+    const tp1Dist = Math.abs(tp1 - entryPrice);
     const tp2Dist = Math.abs(tp2 - entryPrice);
 
     const rr1 = Math.round((tp1Dist / slDistance) * 100) / 100;
     const rr2 = Math.round((tp2Dist / slDistance) * 100) / 100;
+
+    // ── Confluence detection: check if any part of the 61.8%–78.6% entry zone
+    // overlaps within ±2 pts of a round number or ±3 pts of a recent swing high/low ──
+    const zoneL = trend === "Bearish" ? fib.swingLow + range * 0.618 : fib.swingHigh - range * 0.786;
+    const zoneH = trend === "Bearish" ? fib.swingLow + range * 0.786 : fib.swingHigh - range * 0.618;
+    const nearRound = [25, 50].some((step) => {
+      const nearestL = Math.round(zoneL / step) * step;
+      const nearestH = Math.round(zoneH / step) * step;
+      return Math.abs(zoneL - nearestL) <= 2 || Math.abs(zoneH - nearestH) <= 2;
+    });
+    const swingsForConf = findSwings(this.m15Candles);
+    const swingPoints: number[] = [];
+    if (swingsForConf.bullish) { swingPoints.push(swingsForConf.bullish.swingHigh, swingsForConf.bullish.swingLow); }
+    if (swingsForConf.bearish) { swingPoints.push(swingsForConf.bearish.swingHigh, swingsForConf.bearish.swingLow); }
+    const nearSwing = swingPoints.some((p) => p >= zoneL - 3 && p <= zoneH + 3);
+    const confluence = nearRound || nearSwing;
 
     const nowMs = Date.now();
     const sigId = `${closedM5.epoch}_${trend}`;
@@ -1026,6 +1041,7 @@ class DerivService {
       confirmationType,
       outcome: "pending",
       sessionTag,
+      confluence,
     };
 
     // Simpan sinyal baru ke history (hanya sekali per sigId)

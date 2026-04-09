@@ -39,6 +39,7 @@ interface BacktestSignal {
   resolutionNote: string;
   sessionTag: "active" | "low_confidence";
   anchorEpoch: number;
+  confluence: boolean;
 }
 
 // ─── Constants ─────────────────────────────────────────────────────────────────
@@ -523,6 +524,11 @@ async function runBacktest() {
       const m5ATR = calcATR(m5Slice.slice(0, -1), ATR_PERIOD);
       if (m5ATR < atrM15 * M5_ATR_MIN_RATIO) continue;
 
+      // M5 body filter: reject doji/indecision candles where body < 30% of full range
+      const m5FullRange = closedM5.high - closedM5.low;
+      const m5Body = Math.abs(closedM5.close - closedM5.open);
+      if (m5FullRange > 0 && m5Body < m5FullRange * 0.3) continue;
+
       // Candlestick patterns
       const isRejection = checkRejection(closedM5, dir, fib);
       const isEngulfing = checkEngulfing(prevM5, closedM5, dir);
@@ -538,12 +544,16 @@ async function runBacktest() {
       if (slDistance < 2.0) continue;
 
       // Task 3: TP2 = Fib 127.2% + 0.5× ATR M15 (more reachable than 161.8%)
-      const tp1FibLevel = dir === "Bearish" ? fib.swingLow - range * 0.272 : fib.swingHigh + range * 0.272;
-      const tp1AtrLevel = dir === "Bearish" ? entryPrice - atrM15 * 1.0 : entryPrice + atrM15 * 1.0;
-      const tp1 = dir === "Bearish" ? Math.max(tp1FibLevel, tp1AtrLevel) : Math.min(tp1FibLevel, tp1AtrLevel);
       const tp2 = dir === "Bearish"
         ? fib.swingLow - range * 0.272 - atrM15 * 0.5
         : fib.swingHigh + range * 0.272 + atrM15 * 0.5;
+
+      // TP1: minimum 1:1 RR from entry (SL distance), clamped to not exceed TP2
+      const tp1Raw = dir === "Bearish" ? entryPrice - slDistance : entryPrice + slDistance;
+      const tp1 = dir === "Bearish"
+        ? Math.max(tp1Raw, tp2)  // for SELL: tp1 must not go below tp2 (tp2 is lower)
+        : Math.min(tp1Raw, tp2); // for BUY:  tp1 must not exceed tp2 (tp2 is higher)
+
       const tp1Dist = Math.abs(tp1 - entryPrice);
       const tp2Dist = Math.abs(tp2 - entryPrice);
       const rr1 = Math.round((tp1Dist / slDistance) * 100) / 100;
@@ -551,6 +561,21 @@ async function runBacktest() {
 
       // FIX Bug #2: filter sinyal dengan RR2 < minimum (misalnya TP2 terlalu dekat)
       if (rr2 < MIN_RR2) continue;
+
+      // Confluence detection: check if any part of the 61.8%–78.6% entry zone
+      // overlaps within ±2 pts of a round number or ±3 pts of a recent swing high/low
+      const zoneL = dir === "Bearish" ? fib.swingLow + range * 0.618 : fib.swingHigh - range * 0.786;
+      const zoneH = dir === "Bearish" ? fib.swingLow + range * 0.786 : fib.swingHigh - range * 0.618;
+      const nearRound = [25, 50].some((step) => {
+        const nearestL = Math.round(zoneL / step) * step;
+        const nearestH = Math.round(zoneH / step) * step;
+        return Math.abs(zoneL - nearestL) <= 2 || Math.abs(zoneH - nearestH) <= 2;
+      });
+      const swingPoints: number[] = [];
+      if (swings.bullish) { swingPoints.push(swings.bullish.swingHigh, swings.bullish.swingLow); }
+      if (swings.bearish) { swingPoints.push(swings.bearish.swingHigh, swings.bearish.swingLow); }
+      const nearSwing = swingPoints.some((p) => p >= zoneL - 3 && p <= zoneH + 3);
+      const confluence = nearRound || nearSwing;
 
       // Task 5: session tag
       const sessionTag: "active" | "low_confidence" = isActiveSession(closedM5.epoch * 1000) ? "active" : "low_confidence";
@@ -581,6 +606,7 @@ async function runBacktest() {
         confirmationType,
         sessionTag,
         anchorEpoch: swing.anchorEpoch,
+        confluence,
         ...resolution,
       };
 
@@ -593,8 +619,9 @@ async function runBacktest() {
         resolution.outcome === "loss"          ? "❌ SL " : "⏳ EXP";
       const dir2 = dir === "Bullish" ? "BUY " : "SELL";
       const sessFlag = sessionTag === "low_confidence" ? " [⚠ LOW_CONF]" : "";
+      const confFlag = confluence ? " [✦ CONF]" : "";
       console.log(
-        `  ${outcomeIcon} | ${timeStr} | ${dir2} | Entry: ${entryPrice.toFixed(2)} | SL: ${sl.toFixed(2)} | TP1: ${tp1.toFixed(2)} | TP2: ${tp2.toFixed(2)} | RR: 1:${rr1}/1:${rr2} | ${confirmationType.toUpperCase()}${sessFlag} | ${resolution.resolutionNote}`
+        `  ${outcomeIcon} | ${timeStr} | ${dir2} | Entry: ${entryPrice.toFixed(2)} | SL: ${sl.toFixed(2)} | TP1: ${tp1.toFixed(2)} | TP2: ${tp2.toFixed(2)} | RR: 1:${rr1}/1:${rr2} | ${confirmationType.toUpperCase()}${sessFlag}${confFlag} | ${resolution.resolutionNote}`
       );
     }
   }

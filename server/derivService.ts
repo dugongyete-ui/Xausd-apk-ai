@@ -130,14 +130,18 @@ export interface MarketStateSnapshot {
   ema50: number | null;
   ema20m5: number | null;
   ema50m5: number | null;
+  atrM15: number | null;
   fibLevels: FibLevels | null;
   bullFibLevels: FibLevels | null;
   bearFibLevels: FibLevels | null;
   currentSignal: TradingSignal | null;
-  recentSignals: TradingSignal[];  // Masalah 3c: riwayat 10 sinyal terakhir untuk AI context
+  recentSignals: TradingSignal[];
   inZone: boolean;
   connectionStatus: "connecting" | "connected" | "disconnected";
   marketOpen: boolean;
+  isActiveSession: boolean;
+  consecutiveLosses: number;
+  cooldownUntil: number | null;
   lastUpdated: string;
   m15CandleCount: number;
   m5CandleCount: number;
@@ -1337,6 +1341,10 @@ class DerivService {
       : trend === "Bearish" ? "Bearish"
       : this.fibTrend;
 
+    const atrM15Val = this.m15Candles.length >= ATR_PERIOD
+      ? calcATR(this.m15Candles, ATR_PERIOD)
+      : null;
+
     return {
       currentPrice: this.currentPrice,
       trend,
@@ -1344,14 +1352,18 @@ class DerivService {
       ema50,
       ema20m5,
       ema50m5,
+      atrM15: atrM15Val && atrM15Val > 0 ? atrM15Val : null,
       fibLevels: activeFib,
       bullFibLevels: this.bullFibLevels,
       bearFibLevels: this.bearFibLevels,
       currentSignal: this.currentSignal,
-      recentSignals: this.signalHistory.slice(0, 10),  // Masalah 3c: 10 sinyal terakhir untuk AI
+      recentSignals: this.signalHistory.slice(0, 10),
       inZone,
       connectionStatus: this.connectionStatus,
       marketOpen: forexMarketOpen(),
+      isActiveSession: isActiveSession(Date.now()),
+      consecutiveLosses: this.consecutiveLosses,
+      cooldownUntil: this.cooldownUntil,
       lastUpdated: new Date().toUTCString(),
       m15CandleCount: this.m15Candles.length,
       m5CandleCount: this.m5Candles.length,

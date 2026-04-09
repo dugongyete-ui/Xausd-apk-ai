@@ -3,6 +3,7 @@ import https from "https";
 import { aiService } from "./aiService";
 import { loadSignals, saveSignals, clearAllSignals } from "./signalStore";
 import { toWIBString, DERIV_WS_URL as SHARED_WS_URL } from "../shared/utils";
+import { detectMarketRegime, MarketRegime } from "../shared/marketRegime";
 
 // ─── Expo Push Notification API ───────────────────────────────────────────────
 const EXPO_PUSH_URL = "exp.host";
@@ -109,6 +110,7 @@ export interface TradingSignal {
   sessionTag?: "active" | "low_confidence";
   effectiveSL?: number;
   confluence?: boolean;
+  marketRegime?: MarketRegime;
 }
 
 export type TrendState = "Bullish" | "Bearish" | "No Trade" | "Loading";
@@ -1022,6 +1024,8 @@ class DerivService {
     const riskAmount = defaultBalance * 0.01;
     const lotSize = Math.round((riskAmount / slDistance) * 100) / 100;
 
+    const marketRegime = detectMarketRegime(this.m15Candles);
+
     const signal: TradingSignal = {
       id: sigId,
       pair: "XAUUSD",
@@ -1042,6 +1046,7 @@ class DerivService {
       outcome: "pending",
       sessionTag,
       confluence,
+      marketRegime,
     };
 
     // Simpan sinyal baru ke history (hanya sekali per sigId)
@@ -1096,6 +1101,7 @@ class DerivService {
           takeProfit2: tp2,
           riskReward: rr1,
           riskReward2: rr2,
+          marketRegime,
         }).catch((e) => console.error("[PushNotif] Error:", e));
       }
 

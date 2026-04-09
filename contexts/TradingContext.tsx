@@ -115,6 +115,7 @@ export interface TradingSignal {
   outcome?: "win" | "loss" | "pending";
   sessionTag?: "active" | "low_confidence";
   effectiveSL?: number;
+  marketRegime?: "trending" | "ranging" | "unknown";
 }
 
 export type TrendState = "Bullish" | "Bearish" | "No Trade" | "Loading";

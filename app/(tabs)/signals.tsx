@@ -215,6 +215,44 @@ const wrStyles = StyleSheet.create({
   },
 });
 
+function RegimeBadge({ regime }: { regime?: "trending" | "ranging" | "unknown" }) {
+  if (!regime) return null;
+  const config =
+    regime === "trending"
+      ? { color: "#22c55e", bg: "rgba(34,197,94,0.12)", label: "TRENDING" }
+      : regime === "ranging"
+      ? { color: "#f59e0b", bg: "rgba(245,158,11,0.12)", label: "RANGING" }
+      : { color: "#6b7280", bg: "rgba(107,114,128,0.10)", label: "UNKNOWN" };
+  return (
+    <View style={[regimeBadgeStyles.badge, { backgroundColor: config.bg }]}>
+      <View style={[regimeBadgeStyles.dot, { backgroundColor: config.color }]} />
+      <Text style={[regimeBadgeStyles.text, { color: config.color }]}>{config.label}</Text>
+    </View>
+  );
+}
+
+const regimeBadgeStyles = StyleSheet.create({
+  badge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingHorizontal: 7,
+    paddingVertical: 3,
+    borderRadius: 20,
+    alignSelf: "flex-start",
+  },
+  dot: {
+    width: 5,
+    height: 5,
+    borderRadius: 2.5,
+  },
+  text: {
+    fontFamily: "Inter_600SemiBold",
+    fontSize: 8,
+    letterSpacing: 0.8,
+  },
+});
+
 function SignalItem({ signal }: { signal: TradingSignal }) {
   const isBull = signal.trend === "Bullish";
   const trendColor = isBull ? C.green : C.red;
@@ -251,6 +289,7 @@ function SignalItem({ signal }: { signal: TradingSignal }) {
                 {signal.confirmationType === "engulfing" ? "ENGULFING" : "REJECTION"}
               </Text>
             </View>
+            <RegimeBadge regime={signal.marketRegime} />
             <OutcomeBadge outcome={signal.outcome} />
           </View>
           <Text style={styles.pairText}>{signal.pair} · {signal.timeframe}</Text>

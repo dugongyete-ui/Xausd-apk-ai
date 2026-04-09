@@ -10,8 +10,46 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import C from "@/constants/colors";
-import { useTrading, TrendState, FibLevels } from "@/contexts/TradingContext";
+import { useTrading, TrendState, FibLevels, TradingSignal } from "@/contexts/TradingContext";
 import { FibChart } from "@/components/FibChart";
+
+function RegimeBadge({ regime }: { regime?: TradingSignal["marketRegime"] }) {
+  if (!regime) return null;
+  const config =
+    regime === "trending"
+      ? { color: "#22c55e", bg: "rgba(34,197,94,0.12)", label: "TRENDING" }
+      : regime === "ranging"
+      ? { color: "#f59e0b", bg: "rgba(245,158,11,0.12)", label: "RANGING" }
+      : { color: "#6b7280", bg: "rgba(107,114,128,0.10)", label: "UNKNOWN" };
+  return (
+    <View style={[regimeBadgeStyles.badge, { backgroundColor: config.bg }]}>
+      <View style={[regimeBadgeStyles.dot, { backgroundColor: config.color }]} />
+      <Text style={[regimeBadgeStyles.text, { color: config.color }]}>{config.label}</Text>
+    </View>
+  );
+}
+
+const regimeBadgeStyles = StyleSheet.create({
+  badge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingHorizontal: 7,
+    paddingVertical: 3,
+    borderRadius: 20,
+    alignSelf: "flex-start",
+  },
+  dot: {
+    width: 5,
+    height: 5,
+    borderRadius: 2.5,
+  },
+  text: {
+    fontFamily: "Inter_600SemiBold",
+    fontSize: 8,
+    letterSpacing: 0.8,
+  },
+});
 
 // ─── Live Clock ───────────────────────────────────────────────────────────────
 function LiveClock() {
@@ -491,6 +529,7 @@ function SignalCard() {
               {activeSignal.confirmationType === "engulfing" ? "ENGULFING M5" : "REJECTION M5"}
             </Text>
           </View>
+          <RegimeBadge regime={activeSignal.marketRegime} />
           <Text style={styles.confirmSub}>Zona M15 · Konfirmasi M5</Text>
         </View>
         <View style={styles.signalMainRow}>

@@ -5,6 +5,7 @@
  */
 
 import WebSocket from "ws";
+import { detectMarketRegime, MarketRegime } from "../shared/marketRegime";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 interface Candle {
@@ -41,6 +42,7 @@ interface BacktestSignal {
   anchorEpoch: number;
   confluence: boolean;
   mae: number;
+  regime: MarketRegime;
 }
 
 // ─── Constants ─────────────────────────────────────────────────────────────────
@@ -459,6 +461,12 @@ async function runBacktest() {
   const signals: BacktestSignal[] = [];
   const seenSignalIds = new Set<string>();
 
+  // Shadow stats for ADX filter comparison: track non-trending signals separately
+  // These are NOT pushed to `signals` — they exist only for the regime comparison summary.
+  interface ShadowStat { regime: MarketRegime; outcome: "win_tp2" | "win_breakeven" | "loss" | "expired" }
+  const shadowStats: ShadowStat[] = [];
+  const seenShadowIds = new Set<string>();
+
   // Task 1: per-direction cooldown tracking
   const activeBuyId:  { id: string | null; anchor: number | null } = { id: null, anchor: null };
   const activeSellId: { id: string | null; anchor: number | null } = { id: null, anchor: null };
@@ -510,6 +518,9 @@ async function runBacktest() {
     // M15 candles up to closedM5 time
     const m15Slice = m15All.filter((c) => c.epoch <= closedM5.epoch);
     if (m15Slice.length < EMA50_PERIOD) continue;
+
+    // Compute ADX regime for this bar (used for stats and filter)
+    const regime = detectMarketRegime(m15Slice);
 
     const swings = findSwings(m15Slice);
 
@@ -641,10 +652,22 @@ async function runBacktest() {
       // Task 5: session tag
       const sessionTag: "active" | "low_confidence" = isActiveSession(closedM5.epoch * 1000) ? "active" : "low_confidence";
 
-      // Signal valid!
-      seenSignalIds.add(sigId);
+      // ADX regime filter — strictly skip signal generation if not trending.
+      // Non-trending setups are evaluated as shadow stats for comparison only.
+      if (regime !== "trending") {
+        if (!seenShadowIds.has(sigId)) {
+          seenShadowIds.add(sigId);
+          const shadowRes = evaluateOutcome(
+            { trend: dir, entryPrice, stopLoss: sl, takeProfit1: tp1, takeProfit2: tp2, signalEpoch: closedM5.epoch },
+            m5All
+          );
+          shadowStats.push({ regime, outcome: shadowRes.outcome });
+        }
+        continue;
+      }
 
-      // Task 1: register this signal as active for this direction & anchor
+      // Signal valid — register tracking slot
+      seenSignalIds.add(sigId);
       activeTracker.id = sigId;
       activeTracker.anchor = swing.anchorEpoch;
 
@@ -672,6 +695,7 @@ async function runBacktest() {
         resolvedEpoch: resolution.resolvedEpoch,
         resolutionNote: resolution.resolutionNote,
         mae: resolution.mae,
+        regime,
       };
 
       signals.push(bsig);
@@ -692,8 +716,10 @@ async function runBacktest() {
 
   // ─── Summary ──────────────────────────────────────────────────────────────
   const isWin = (s: BacktestSignal) => s.outcome === "win_tp2" || s.outcome === "win_breakeven";
+  const isShadowWin = (s: { outcome: string }) => s.outcome === "win_tp2" || s.outcome === "win_breakeven";
 
-  // FIX Bug #3: pisahkan active vs low_confidence dalam evaluasi winrate
+  // All signals in `signals` are trending-only (regime = "trending")
+  // Shadow stats hold non-trending candidates for comparison
   const activeSessionSigs = signals.filter((s) => s.sessionTag === "active");
   const lowConfSigs       = signals.filter((s) => s.sessionTag === "low_confidence");
 
@@ -761,6 +787,31 @@ async function runBacktest() {
   console.log("───────────────────────────────────────────────────────────────");
   console.log(`  Pin Bar   : ${rejSignals.length} total, ${rejWins} win (${wRate(rejWins, rejSignals.length)})`);
   console.log(`  Engulfing : ${engSignals.length} total, ${engWins} win (${wRate(engWins, engSignals.length)})`);
+  console.log("───────────────────────────────────────────────────────────────");
+  // ADX regime comparison: trending (passed filter) vs non-trending shadow stats
+  const rangingShadow = shadowStats.filter((s) => s.regime === "ranging");
+  const unknownShadow = shadowStats.filter((s) => s.regime === "unknown");
+  const trendingWins  = evalSignals.filter(isWin).length;
+  const trendingRes   = evalSignals.filter((s) => s.outcome === "loss" || isWin(s)).length;
+  const rangingWins   = rangingShadow.filter(isShadowWin).length;
+  const unknownWins   = unknownShadow.filter(isShadowWin).length;
+  const rangingRes    = rangingShadow.filter((s) => s.outcome === "loss" || isShadowWin(s)).length;
+  const unknownRes    = unknownShadow.filter((s) => s.outcome === "loss" || isShadowWin(s)).length;
+  const nonTrendTotal = shadowStats.length;
+  const nonTrendWins  = shadowStats.filter(isShadowWin).length;
+  const nonTrendRes   = shadowStats.filter((s) => s.outcome === "loss" || isShadowWin(s)).length;
+  console.log(`  ADX Regime breakdown (trending = generated; ranging/unknown = shadow stats):`);
+  console.log(`    Trending (ADX>25) [✓ sinyal aktif]: ${evalSignals.length} sinyal, ${trendingWins} win — WR ${wRate(trendingWins, trendingRes)} (vs resolved)`);
+  console.log(`    Ranging  (ADX<20) [✗ filter shadow]: ${rangingShadow.length} kandidat, ${rangingWins} win — WR ${wRate(rangingWins, rangingRes)} (vs resolved)`);
+  console.log(`    Unknown  (20-25)  [✗ filter shadow]: ${unknownShadow.length} kandidat, ${unknownWins} win — WR ${wRate(unknownWins, unknownRes)} (vs resolved)`);
+  console.log(`    Non-trending total (shadow):          ${nonTrendTotal} kandidat, ${nonTrendWins} win — WR ${wRate(nonTrendWins, nonTrendRes)} (vs resolved)`);
+  if (evalSignals.length > 0 && nonTrendTotal > 0) {
+    const trendingWR = trendingRes > 0 ? (trendingWins / trendingRes * 100) : 0;
+    const nonTrendWR = nonTrendRes  > 0 ? (nonTrendWins  / nonTrendRes  * 100) : 0;
+    const diff = trendingWR - nonTrendWR;
+    const verdict = diff > 5 ? "✓ ADX filter meningkatkan WR" : diff < -5 ? "✗ ADX filter menurunkan WR" : "≈ ADX filter tidak signifikan";
+    console.log(`    Filter verdict: ${verdict} (trending ${trendingWR.toFixed(1)}% vs non-trending ${nonTrendWR.toFixed(1)}%, delta ${diff > 0 ? "+" : ""}${diff.toFixed(1)}%)`);
+  }
   console.log("═══════════════════════════════════════════════════════════════\n");
 
   if (signals.length === 0) {

@@ -136,6 +136,7 @@ export function SignalAlertBanner() {
         </View>
         <Text style={styles.subText}>
           {alert.signal.confirmationType === "engulfing" ? "Engulfing M5" : "Rejection M5"} · R:R 1:{alert.signal.riskReward}
+          {alert.signal.marketRegime ? ` · ${alert.signal.marketRegime.toUpperCase()}` : ""}
         </Text>
       </View>
 

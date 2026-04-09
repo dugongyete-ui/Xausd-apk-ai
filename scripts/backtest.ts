@@ -51,6 +51,12 @@ const EMA50_PERIOD = 50;
 const ATR_PERIOD = 14;
 const M5_ATR_MIN_RATIO = 0.5;
 const MAX_SIGNAL_LOOKAHEAD_BARS = 60; // Max 60 M5 bars (~5 jam) untuk resolve outcome
+const MIN_RR2 = 1.0;                  // Minimum RR di TP2 agar sinyal layak diambil
+
+// ─── CLI Args ──────────────────────────────────────────────────────────────────
+const args = process.argv.slice(2);
+const DAYS_WINDOW = (() => { const d = args.find((a) => a.startsWith("--days=")); return d ? Math.max(1, parseInt(d.split("=")[1]) || 1) : 1; })();
+const FILTER_SESSION = args.includes("--active-only"); // hanya hitung active session di winrate utama
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 function calcEMA(closes: number[], period: number): number[] {
@@ -302,7 +308,16 @@ function evaluateOutcome(
     const tp1Hit = isBull ? c.high >= signal.takeProfit1 : c.low <= signal.takeProfit1;
     const slHit  = isBull ? c.low  <= effectiveSL        : c.high >= effectiveSL;
 
-    if (tp2Hit && !slHit) return { outcome: "win_tp2", resolvedEpoch: c.epoch, resolutionNote: `TP2 hit @ bar ${i - signalIdx}` };
+    // FIX: handle TP2 + SL same bar with candle body heuristic (previously TP2 was ignored)
+    if (tp2Hit) {
+      if (!slHit) return { outcome: "win_tp2", resolvedEpoch: c.epoch, resolutionNote: `TP2 hit @ bar ${i - signalIdx}` };
+      // TP2 and SL hit same bar — use candle body direction to determine winner
+      const candleDir2 = c.close > c.open ? "bull" : "bear";
+      if ((isBull && candleDir2 === "bull") || (!isBull && candleDir2 === "bear")) {
+        return { outcome: "win_tp2", resolvedEpoch: c.epoch, resolutionNote: `TP2+SL same bar, body favors entry @ bar ${i - signalIdx}` };
+      }
+      return { outcome: "loss", resolvedEpoch: c.epoch, resolutionNote: `TP2+SL same bar, body against entry @ bar ${i - signalIdx}` };
+    }
 
     if (!tp1Locked) {
       // TP1 not yet reached
@@ -337,28 +352,32 @@ function evaluateOutcome(
 // ─── Main Backtest ─────────────────────────────────────────────────────────────
 async function runBacktest() {
   const nowEpoch = Math.floor(Date.now() / 1000);
-  const startEpoch = nowEpoch - 24 * 3600; // 24 jam kebelakang
+  const startEpoch = nowEpoch - DAYS_WINDOW * 24 * 3600;
 
   // Butuh konteks M15 lebih panjang untuk swing detection (300 candle M15 = ~75 jam)
-  const m15ContextStart = nowEpoch - 300 * M15_GRAN;
+  const m15ContextStart = Math.min(startEpoch - 300 * M15_GRAN, nowEpoch - 300 * M15_GRAN);
 
   console.log("═══════════════════════════════════════════════════════════════");
-  console.log("  LIBARTIN BACKTEST — XAUUSD — 24 JAM TERAKHIR");
+  console.log(`  LIBARTIN BACKTEST — XAUUSD — ${DAYS_WINDOW} HARI TERAKHIR`);
+  console.log(`  Filter session aktif: ${FILTER_SESSION ? "YA (--active-only)" : "TIDAK (semua sinyal)"}`);
+  console.log(`  Min RR2 filter      : ${MIN_RR2}`);
   console.log("═══════════════════════════════════════════════════════════════");
   console.log(`  Periode  : ${new Date(startEpoch * 1000).toISOString()} → ${new Date(nowEpoch * 1000).toISOString()}`);
   console.log(`  Lookback M15 context: ${new Date(m15ContextStart * 1000).toISOString()}`);
   console.log("  Mengambil data dari Deriv API...\n");
+  console.log("  Penggunaan: npx tsx scripts/backtest.ts [--days=N] [--active-only]");
+  console.log("  Contoh   : npx tsx scripts/backtest.ts --days=7 --active-only\n");
 
   let m15All: Candle[];
   let m5All: Candle[];
 
   try {
-    console.log("  [1/2] Mengambil candle M15 (konteks + 24 jam)...");
+    console.log("  [1/2] Mengambil candle M15 (konteks + window)...");
     m15All = await fetchCandles(M15_GRAN, m15ContextStart, nowEpoch);
     console.log(`        ✓ ${m15All.length} candle M15 diterima`);
 
-    console.log("  [2/2] Mengambil candle M5 (24 jam + 200 konteks)...");
-    const m5Start = nowEpoch - (24 * 3600) - (200 * M5_GRAN);
+    console.log("  [2/2] Mengambil candle M5 (window + 200 konteks)...");
+    const m5Start = startEpoch - (200 * M5_GRAN);
     m5All = await fetchCandles(M5_GRAN, m5Start, nowEpoch);
     console.log(`        ✓ ${m5All.length} candle M5 diterima\n`);
   } catch (err) {
@@ -530,6 +549,9 @@ async function runBacktest() {
       const rr1 = Math.round((tp1Dist / slDistance) * 100) / 100;
       const rr2 = Math.round((tp2Dist / slDistance) * 100) / 100;
 
+      // FIX Bug #2: filter sinyal dengan RR2 < minimum (misalnya TP2 terlalu dekat)
+      if (rr2 < MIN_RR2) continue;
+
       // Task 5: session tag
       const sessionTag: "active" | "low_confidence" = isActiveSession(closedM5.epoch * 1000) ? "active" : "low_confidence";
 
@@ -580,55 +602,73 @@ async function runBacktest() {
   // ─── Summary ──────────────────────────────────────────────────────────────
   const isWin = (s: BacktestSignal) => s.outcome === "win_tp2" || s.outcome === "win_breakeven";
 
-  const total   = signals.length;
-  const winTP2  = signals.filter((s) => s.outcome === "win_tp2").length;
-  const winBEP  = signals.filter((s) => s.outcome === "win_breakeven").length;
-  const wins    = signals.filter(isWin).length;
-  const losses  = signals.filter((s) => s.outcome === "loss").length;
-  const expired = signals.filter((s) => s.outcome === "expired").length;
+  // FIX Bug #3: pisahkan active vs low_confidence dalam evaluasi winrate
+  const activeSessionSigs = signals.filter((s) => s.sessionTag === "active");
+  const lowConfSigs       = signals.filter((s) => s.sessionTag === "low_confidence");
+
+  // Jika --active-only: hanya hitung sinyal di session aktif untuk winrate utama
+  const evalSignals = FILTER_SESSION ? activeSessionSigs : signals;
+
+  const total   = evalSignals.length;
+  const winTP2  = evalSignals.filter((s) => s.outcome === "win_tp2").length;
+  const winBEP  = evalSignals.filter((s) => s.outcome === "win_breakeven").length;
+  const wins    = evalSignals.filter(isWin).length;
+  const losses  = evalSignals.filter((s) => s.outcome === "loss").length;
+  const expired = evalSignals.filter((s) => s.outcome === "expired").length;
   const resolved = wins + losses;
   const winRate = resolved > 0 ? ((wins / resolved) * 100).toFixed(1) : "N/A";
   const winRateAll = total > 0 ? ((wins / total) * 100).toFixed(1) : "N/A";
 
-  const activeSessionSigs = signals.filter((s) => s.sessionTag === "active");
-  const lowConfSigs       = signals.filter((s) => s.sessionTag === "low_confidence");
-  const activeWins        = activeSessionSigs.filter(isWin).length;
+  // Expected value (per 1R risk): win_tp2 avg RR2 - loss * 1 (1R)
+  const avgRR2 = evalSignals.length > 0 ? evalSignals.reduce((a, s) => a + s.rr2, 0) / evalSignals.length : 0;
+  const ev = resolved > 0
+    ? (((wins / resolved) * avgRR2) - ((losses / resolved) * 1.0)).toFixed(2)
+    : "N/A";
 
-  const buySignals  = signals.filter((s) => s.trend === "Bullish");
-  const sellSignals = signals.filter((s) => s.trend === "Bearish");
+  const activeWins = activeSessionSigs.filter(isWin).length;
+  const activeResolved = activeSessionSigs.filter((s) => s.outcome === "loss" || isWin(s)).length;
+  const lowConfWins = lowConfSigs.filter(isWin).length;
+  const lowConfResolved = lowConfSigs.filter((s) => s.outcome === "loss" || isWin(s)).length;
+
+  const buySignals  = evalSignals.filter((s) => s.trend === "Bullish");
+  const sellSignals = evalSignals.filter((s) => s.trend === "Bearish");
   const buyWins  = buySignals.filter(isWin).length;
   const sellWins = sellSignals.filter(isWin).length;
 
-  const rejSignals = signals.filter((s) => s.confirmationType === "rejection");
-  const engSignals = signals.filter((s) => s.confirmationType === "engulfing");
+  const rejSignals = evalSignals.filter((s) => s.confirmationType === "rejection");
+  const engSignals = evalSignals.filter((s) => s.confirmationType === "engulfing");
   const rejWins = rejSignals.filter(isWin).length;
   const engWins = engSignals.filter(isWin).length;
 
+  const wRate = (w: number, t: number) => t > 0 ? `${((w / t) * 100).toFixed(1)}%` : "N/A";
+
   console.log("\n═══════════════════════════════════════════════════════════════");
-  console.log("  HASIL BACKTEST — XAUUSD — 24 JAM TERAKHIR");
+  console.log(`  HASIL BACKTEST — XAUUSD — ${DAYS_WINDOW} HARI TERAKHIR${FILTER_SESSION ? " [ACTIVE SESSION ONLY]" : ""}`);
   console.log("═══════════════════════════════════════════════════════════════");
-  console.log(`  Total sinyal    : ${total}`);
-  console.log(`  Win (TP2)       : ${winTP2}`);
-  console.log(`  Win (Breakeven) : ${winBEP}`);
-  console.log(`  Total Win       : ${wins}`);
-  console.log(`  Loss (SL)       : ${losses}`);
-  console.log(`  Expired (>5jam) : ${expired}`);
+  console.log(`  Total sinyal dievaluasi: ${total}${!FILTER_SESSION ? ` (active: ${activeSessionSigs.length}, low_conf: ${lowConfSigs.length})` : ""}`);
+  console.log(`  Win (TP2)              : ${winTP2}`);
+  console.log(`  Win (Breakeven)        : ${winBEP}`);
+  console.log(`  Total Win              : ${wins}`);
+  console.log(`  Loss (SL)              : ${losses}`);
+  console.log(`  Expired (>${MAX_SIGNAL_LOOKAHEAD_BARS / 12}jam)         : ${expired}`);
   console.log("───────────────────────────────────────────────────────────────");
-  console.log(`  WINRATE (vs resolved)  : ${winRate}%   [${wins}/${resolved}]`);
-  console.log(`  WINRATE (vs semua)     : ${winRateAll}%   [${wins}/${total}]`);
+  console.log(`  WINRATE (vs resolved)  : ${winRate}   [${wins}/${resolved}]`);
+  console.log(`  WINRATE (vs semua)     : ${winRateAll}   [${wins}/${total}]`);
+  console.log(`  Expected Value / trade : ${ev}R  (avg RR2=${avgRR2.toFixed(2)})`);
   console.log("───────────────────────────────────────────────────────────────");
-  console.log(`  BUY  signals: ${buySignals.length} total, ${buyWins} win (${buySignals.length > 0 ? ((buyWins / buySignals.length) * 100).toFixed(1) : "N/A"}%)`);
-  console.log(`  SELL signals: ${sellSignals.length} total, ${sellWins} win (${sellSignals.length > 0 ? ((sellWins / sellSignals.length) * 100).toFixed(1) : "N/A"}%)`);
+  console.log(`  Session breakdown:`);
+  console.log(`    Active (London+NY) : ${activeSessionSigs.length} sinyal, ${activeWins} win — WR ${wRate(activeWins, activeResolved)} (vs resolved)`);
+  console.log(`    Low confidence     : ${lowConfSigs.length} sinyal, ${lowConfWins} win — WR ${wRate(lowConfWins, lowConfResolved)} (vs resolved)`);
   console.log("───────────────────────────────────────────────────────────────");
-  console.log(`  Pin Bar     : ${rejSignals.length} total, ${rejWins} win (${rejSignals.length > 0 ? ((rejWins / rejSignals.length) * 100).toFixed(1) : "N/A"}%)`);
-  console.log(`  Engulfing   : ${engSignals.length} total, ${engWins} win (${engSignals.length > 0 ? ((engWins / engSignals.length) * 100).toFixed(1) : "N/A"}%)`);
+  console.log(`  BUY  signals: ${buySignals.length} total, ${buyWins} win (${wRate(buyWins, buySignals.length)})`);
+  console.log(`  SELL signals: ${sellSignals.length} total, ${sellWins} win (${wRate(sellWins, sellSignals.length)})`);
   console.log("───────────────────────────────────────────────────────────────");
-  console.log(`  Active session: ${activeSessionSigs.length} signals, ${activeWins} win (${activeSessionSigs.length > 0 ? ((activeWins / activeSessionSigs.length) * 100).toFixed(1) : "N/A"}%)`);
-  console.log(`  Low confidence: ${lowConfSigs.length} signals (outside London+NY)`);
+  console.log(`  Pin Bar   : ${rejSignals.length} total, ${rejWins} win (${wRate(rejWins, rejSignals.length)})`);
+  console.log(`  Engulfing : ${engSignals.length} total, ${engWins} win (${wRate(engWins, engSignals.length)})`);
   console.log("═══════════════════════════════════════════════════════════════\n");
 
-  if (total === 0) {
-    console.log("  ⚠  Tidak ada sinyal terbentuk dalam 24 jam terakhir.");
+  if (signals.length === 0) {
+    console.log(`  ⚠  Tidak ada sinyal terbentuk dalam ${DAYS_WINDOW} hari terakhir.`);
     console.log("  Kemungkinan kondisi: pasar sideways / tidak memenuhi kriteria EMA50/fib/pattern.\n");
   }
 }

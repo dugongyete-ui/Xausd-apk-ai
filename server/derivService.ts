@@ -355,15 +355,17 @@ function checkRejection(candle: Candle, trend: "Bullish" | "Bearish", fib: FibLe
     if (candle.close <= candle.open) return false;
     const lowerWick = Math.min(candle.open, candle.close) - candle.low;
     if (lowerWick < body * 0.8) return false;
-    // Lower wick harus mencapai zona diperluas
+    // Lower wick harus masuk zona (antara lo dan hi), dengan toleransi 15% di bawah lo
     if (candle.low > hi) return false;
+    if (candle.low < lo - (hi - lo) * 0.15) return false;
     return true;
   }
   if (candle.close >= candle.open) return false;
   const upperWick = candle.high - Math.max(candle.open, candle.close);
   if (upperWick < body * 0.8) return false;
-  // Upper wick harus mencapai zona diperluas
+  // Upper wick harus masuk zona (antara lo dan hi), dengan toleransi 15% di atas hi
   if (candle.high < lo) return false;
+  if (candle.high > hi + (hi - lo) * 0.15) return false;
   return true;
 }
 
@@ -371,20 +373,22 @@ function checkEngulfing(prev: Candle, curr: Candle, trend: "Bullish" | "Bearish"
   const prevBody = Math.abs(prev.close - prev.open);
   const currBody = Math.abs(curr.close - curr.open);
   if (prevBody === 0 || currBody === 0) return false;
-  // Diperlonggar untuk scalping: cukup curr body >= 55% dari prev body
+  // Candle saat ini harus cukup kuat: body minimal 70% dari prev body
+  if (currBody < prevBody * 0.70) return false;
   if (trend === "Bullish") {
     const prevBear = prev.close < prev.open;
     const currBull = curr.close > curr.open;
     if (!prevBear || !currBull) return false;
-    // Partial engulfing: curr close melebihi 55% prev body
-    const engulfTarget = prev.close + (prev.open - prev.close) * 0.55;
-    return curr.close >= engulfTarget && curr.open <= prev.close + prevBody * 0.35;
+    // Engulf minimal 65% body prev (dinaikkan dari 55% untuk kualitas lebih tinggi)
+    const engulfTarget = prev.close + (prev.open - prev.close) * 0.65;
+    return curr.close >= engulfTarget && curr.open <= prev.close + prevBody * 0.25;
   }
   const prevBull = prev.close > prev.open;
   const currBear = curr.close < curr.open;
   if (!prevBull || !currBear) return false;
-  const engulfTarget = prev.close - (prev.close - prev.open) * 0.55;
-  return curr.close <= engulfTarget && curr.open >= prev.close - prevBody * 0.35;
+  // Engulf minimal 65% body prev (dinaikkan dari 55% untuk kualitas lebih tinggi)
+  const engulfTarget = prev.close - (prev.close - prev.open) * 0.65;
+  return curr.close <= engulfTarget && curr.open >= prev.close - prevBody * 0.25;
 }
 
 function getTrend(m15Candles: Candle[]): TrendState {
@@ -937,10 +941,12 @@ class DerivService {
     const closedM5 = this.m5Candles[this.m5Candles.length - 2];
     const prevM5   = this.m5Candles[this.m5Candles.length - 3];
 
-    // Zone check: HANYA candle closed yang boleh menyentuh zona — TIDAK ada live price
+    // Zone check: wick candle harus masuk DALAM zona fib (50%–88.6%), bukan cuma sentuh satu sisi.
+    // Bearish: high harus di antara lo dan hi (+ toleransi 15%). Bullish: low harus di antara lo dan hi (- toleransi 15%).
+    const zoneTol = (hi - lo) * 0.15;
     const candleTouchesZone = trend === "Bearish"
-      ? closedM5.high >= lo
-      : closedM5.low <= hi;
+      ? closedM5.high >= lo && closedM5.high <= hi + zoneTol
+      : closedM5.low  <= hi && closedM5.low  >= lo - zoneTol;
     if (!candleTouchesZone) return null;
 
     // Volatility filter M5 — dinamis: M5 ATR harus ≥ M5_ATR_MIN_RATIO × M15 ATR
@@ -993,6 +999,10 @@ class DerivService {
 
     const rr1 = Math.round((tp1Dist / slDistance) * 100) / 100;
     const rr2 = Math.round((tp2Dist / slDistance) * 100) / 100;
+
+    // Filter sinyal dengan RR2 terlalu kecil (minimum 1.5 untuk kualitas sinyal)
+    const MIN_RR2 = 1.5;
+    if (rr2 < MIN_RR2) return null;
 
     // ── Confluence detection: check if any part of the 61.8%–78.6% entry zone
     // overlaps within ±2 pts of a round number or ±3 pts of a recent swing high/low ──

@@ -116,7 +116,7 @@ SISTEM PERLINDUNGAN DAN FILTER:
 1. Session filter: Sinyal hanya aktif saat London (07:00-16:00 UTC) atau New York (13:00-22:00 UTC). Di luar sesi ini sinyal ditandai "low_confidence".
 2. Spike zone: Entry TIDAK diambil dalam 30 menit pertama London Open (07:00-07:30 UTC) dan NY Open (13:00-13:30 UTC) — zona stop hunt / spike tinggi.
 3. Max 1 sinyal per arah per anchor Fibonacci — tidak ada sinyal duplikat.
-4. Cooldown: Setelah 3 consecutive loss (termasuk expired), sistem masuk cooldown 4 jam, tidak buka sinyal baru.
+4. Cooldown: Setelah 3 consecutive loss (HANYA SL hit, bukan expired), sistem masuk cooldown 4 jam, tidak buka sinyal baru. Sinyal EXPIRED tidak dihitung sebagai loss — expired hanya berarti konfirmasi tidak datang dalam 5 jam.
 5. Expiry: Sinyal yang belum resolved dalam 5 jam otomatis ditandai EXPIRED.
 6. Lot size: Otomatis dihitung berdasarkan risiko 1% dari saldo $10.000.
 
@@ -416,6 +416,7 @@ class AIService {
   private conversationHistory: ConversationTurn[] = [];
   private isGenerating = false;
   private isGeneratingZoneAlert = false;
+  private isGeneratingOutcome = false;
   private lastSignalId: string | null = null;
   private lastZoneKeys: { bull: string | null; bear: string | null } = { bull: null, bear: null };
 

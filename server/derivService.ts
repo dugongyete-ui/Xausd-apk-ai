@@ -333,15 +333,17 @@ function calcFib(swingHigh: number, swingLow: number, trend: "Bullish" | "Bearis
   };
 }
 
-// Rejection Pin Bar — kondisi diperlonggar untuk lebih sering terpenuhi:
-// ① Candle arah sesuai trend (close vs open)
-// ② Wick dominan ≥ 0.8× body (dari 1.5× — lebih permisif)
-// ③ Wick menyentuh/masuk zona DIPERLUAS (50%–88.6%)
-// Body center check DIHAPUS — terlalu ketat
+// Rejection Pin Bar — kriteria yang dipakai:
+// ① Wick dominan ≥ 0.8× body — candle BOLEH merah/hijau (tidak wajib searah trend)
+//    Pin bar merah di support BUY = valid (long lower wick = rejection bawah)
+//    Pin bar hijau di resistance SELL = valid (long upper wick = rejection atas)
+// ② Wick menyentuh/masuk zona DIPERLUAS (50%–88.6%)
+// ③ Doji murni (body = 0) ditolak
 // Hanya candle CLOSED yang dievaluasi (dijamin dari caller)
 
 function checkRejection(candle: Candle, trend: "Bullish" | "Bearish", fib: FibLevels): boolean {
   const body = Math.abs(candle.close - candle.open);
+  // Doji murni (body = 0) ditolak, tapi candle kecil dengan wick besar tetap valid
   if (body === 0) return false;
 
   // Zona diperluas: gunakan 50%–88.6% bukan hanya 61.8%–78.6%
@@ -356,7 +358,9 @@ function checkRejection(candle: Candle, trend: "Bullish" | "Bearish", fib: FibLe
   }
 
   if (trend === "Bullish") {
-    if (candle.close <= candle.open) return false;
+    // Pin bar bullish: wick bawah dominan — candle bisa hijau (close>open) atau
+    // merah (close<open) asalkan lower wick panjang dan menyentuh zona support.
+    // Candle merah di support (rejection bawah) sama validnya dengan candle hijau.
     const lowerWick = Math.min(candle.open, candle.close) - candle.low;
     if (lowerWick < body * 0.8) return false;
     // Lower wick harus masuk zona (antara lo dan hi), dengan toleransi 15% di bawah lo
@@ -364,7 +368,9 @@ function checkRejection(candle: Candle, trend: "Bullish" | "Bearish", fib: FibLe
     if (candle.low < lo - (hi - lo) * 0.15) return false;
     return true;
   }
-  if (candle.close >= candle.open) return false;
+  // Pin bar bearish: wick atas dominan — candle bisa merah (close<open) atau
+  // hijau (close>open) asalkan upper wick panjang dan menyentuh zona resistance.
+  // Candle hijau di resistance (rejection atas) sama validnya dengan candle merah.
   const upperWick = candle.high - Math.max(candle.open, candle.close);
   if (upperWick < body * 0.8) return false;
   // Upper wick harus masuk zona (antara lo dan hi), dengan toleransi 15% di atas hi
@@ -810,12 +816,7 @@ class DerivService {
       if (signalAge > SIGNAL_EXPIRY_MS) {
         sig.outcome = "expired";
         changed = true;
-        console.log(`[DerivService] Signal ${sig.id} expired after ${Math.round(signalAge / 3600000)}h`);
-        this.consecutiveLosses++;
-        if (this.consecutiveLosses >= MAX_DAILY_LOSS && !this.cooldownUntil) {
-          this.cooldownUntil = Date.now() + COOLDOWN_MS;
-          console.log(`[DerivService] MAX_DAILY_LOSS reached (${MAX_DAILY_LOSS}) — 4h cooldown aktif`);
-        }
+        console.log(`[DerivService] Signal ${sig.id} expired after ${Math.round(signalAge / 3600000)}h — tidak dihitung sebagai consecutive loss`);
         if (isBull) { this.activeBuySignalId = null; this.bullAnchorSignaled = null; }
         else         { this.activeSellSignalId = null; this.bearAnchorSignaled = null; }
         continue;
@@ -873,6 +874,8 @@ class DerivService {
         console.log(`[DerivService] Signal ${sig.id} hit TP1 @ high/low ${hitPrice} → SL trailed to breakeven @ ${sig.entryPrice}`);
         // Push zero-floating update ke semua SSE clients secara real-time
         this.emitSSE("signal_update", { ...sig });
+        // Kirim notifikasi TP1 ke AI — instant message + background elaboration
+        aiService.notifyTP1Hit(sig);
       }
     }
     if (changed) saveSignals(this.signalHistory);

@@ -219,15 +219,20 @@ export function FibChart() {
   const candleW = visibleCandles.length > 0 ? plotW / visibleCandles.length : 10;
   const bodyW = Math.max(2, candleW * 0.65);
 
-  function emaPath(series: number[]): string {
+  function emaPath(series: number[], candleCount?: number): string {
     if (series.length === 0) return "";
     let d = "";
     let started = false;
-    const step = plotW / series.length;
+    // Use actual candle count so EMA x-positions align perfectly with candlesticks
+    // even if series has a slightly different length due to slicing edge cases
+    const count = candleCount ?? series.length;
+    const step = count > 0 ? plotW / count : plotW / series.length;
+    // Offset to align EMA to candle center: if series is shorter, anchor to the right
+    const offset = count > series.length ? (count - series.length) * step : 0;
     for (let i = 0; i < series.length; i++) {
       const v = series[i];
       if (isNaN(v)) { started = false; continue; }
-      const x = i * step + step / 2;
+      const x = offset + i * step + step / 2;
       const y = priceToY(v, lo, hi, plotH);
       d += started ? `L${x.toFixed(1)},${y.toFixed(1)} ` : `M${x.toFixed(1)},${y.toFixed(1)} `;
       started = true;
@@ -410,15 +415,15 @@ export function FibChart() {
 
           {/* EMA Lines — M15 view */}
           {selectedTF === "M15" && ema50Series.length > 0 && (
-            <Path d={emaPath(ema50Series)} stroke="#A78BFA" strokeWidth={1.5} fill="none" opacity={0.85} />
+            <Path d={emaPath(ema50Series, visibleCandles.length)} stroke="#A78BFA" strokeWidth={1.5} fill="none" opacity={0.85} />
           )}
 
           {/* EMA Lines — M5 view: EMA20 (momentum fast) + EMA50 (intraday trend) */}
           {selectedTF === "M5" && m5Ema50Series.length > 0 && (
-            <Path d={emaPath(m5Ema50Series)} stroke="#A78BFA" strokeWidth={1.5} fill="none" opacity={0.85} />
+            <Path d={emaPath(m5Ema50Series, visibleCandles.length)} stroke="#A78BFA" strokeWidth={1.5} fill="none" opacity={0.85} />
           )}
           {selectedTF === "M5" && m5Ema20Series.length > 0 && (
-            <Path d={emaPath(m5Ema20Series)} stroke="#34D399" strokeWidth={1.5} fill="none" opacity={0.9} />
+            <Path d={emaPath(m5Ema20Series, visibleCandles.length)} stroke="#34D399" strokeWidth={1.5} fill="none" opacity={0.9} />
           )}
 
           {/* EMA reference lines on M5 view */}

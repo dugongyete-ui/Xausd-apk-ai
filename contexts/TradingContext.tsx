@@ -148,6 +148,8 @@ interface TradingContextValue {
   marketNextOpen: string;
   notificationEnabled: boolean;
   requestNotifications: () => void;
+  webNotificationEnabled: boolean;
+  requestWebNotifications: () => void;
   updateSignalOutcome: (id: string, outcome: "win" | "loss", signalData?: TradingSignal) => void;
   injectDemoSignal: (type: "BUY" | "SELL") => void;
   clearDemoSignal: () => void;
@@ -445,6 +447,9 @@ export function TradingProvider({ children }: { children: ReactNode }) {
   const [marketState, setMarketState] = useState<MarketState>(forexMarketOpen() ? "open" : "closed");
   const [marketNextOpen, setMarketNextOpen] = useState(nextOpenDesc());
   const [notificationEnabled, setNotificationEnabled] = useState<boolean>(false);
+  const [webNotificationEnabled, setWebNotificationEnabled] = useState<boolean>(
+    Platform.OS === "web" && typeof Notification !== "undefined" && Notification.permission === "granted"
+  );
   const pushTokenRef = useRef<string | null>(null);
 
   const wsRef = useRef<WebSocket | null>(null);
@@ -788,6 +793,22 @@ export function TradingProvider({ children }: { children: ReactNode }) {
                 if (prev && (prev.outcome !== "win" && prev.outcome !== "loss" && prev.outcome !== "expired")) return prev;
                 return newSignal;
               });
+              // Web browser notification when signal arrives
+              if (Platform.OS === "web" && typeof Notification !== "undefined" && Notification.permission === "granted") {
+                const isBull = newSignal.trend === "Bullish";
+                const notifTitle = `${isBull ? "🟢 BUY ▲" : "🔴 SELL ▼"} LIBARTIN · XAUUSD`;
+                const notifBody =
+                  `Entry: ${newSignal.entryPrice.toFixed(2)}  |  SL: ${newSignal.stopLoss.toFixed(2)}\n` +
+                  `TP1: ${newSignal.takeProfit.toFixed(2)}  |  TP2: ${(newSignal.takeProfit2 ?? newSignal.takeProfit).toFixed(2)}\n` +
+                  `R:R 1:${newSignal.riskReward} / 1:${newSignal.riskReward2 ?? newSignal.riskReward}`;
+                try {
+                  new Notification(notifTitle, {
+                    body: notifBody,
+                    tag: newSignal.id,
+                    icon: "/favicon.ico",
+                  });
+                } catch {}
+              }
             }
           } catch {}
         });
@@ -797,6 +818,11 @@ export function TradingProvider({ children }: { children: ReactNode }) {
             const snap = JSON.parse((e as MessageEvent).data);
             if (snap.currentPrice) setCurrentPrice(snap.currentPrice);
             if (snap.connectionStatus) setConnectionStatus(snap.connectionStatus);
+            // Sync backend fibonacci levels to match server signal detection
+            if (snap.bullFibLevels) setBullFibLevels(snap.bullFibLevels);
+            if (snap.bearFibLevels) setBearFibLevels(snap.bearFibLevels);
+            if (!snap.bullFibLevels) setBullFibLevels(null);
+            if (!snap.bearFibLevels) setBearFibLevels(null);
           } catch {}
         });
         // Menerima update real-time saat effectiveSL berubah (TP1 hit → zero floating)
@@ -826,6 +852,21 @@ export function TradingProvider({ children }: { children: ReactNode }) {
 
     connectSSE();
     const syncTimer = setInterval(fetchAndMergeSignals, 15 * 1000);
+
+    // Periodic sync of backend fibonacci levels (every 60s) — ensures chart lines
+    // always match the server's swing/fib calculations used for signal generation.
+    const fibSyncTimer = setInterval(() => {
+      if (!BACKEND_URL) return;
+      fetch(`${BACKEND_URL}/api/market-state`)
+        .then((r) => r.json())
+        .then((snap) => {
+          if (snap.bullFibLevels) setBullFibLevels(snap.bullFibLevels);
+          else setBullFibLevels(null);
+          if (snap.bearFibLevels) setBearFibLevels(snap.bearFibLevels);
+          else setBearFibLevels(null);
+        })
+        .catch(() => {});
+    }, 60_000);
 
     // ── Periodic check: restore active pending signal from backend ────────────
     // Server adalah satu-satunya yang memantau TP/SL — client hanya polling hasilnya
@@ -879,6 +920,7 @@ export function TradingProvider({ children }: { children: ReactNode }) {
 
     return () => {
       clearInterval(syncTimer);
+      clearInterval(fibSyncTimer);
       clearInterval(signalSyncTimer);
       // Cleanup SSE
       if (sseHeartbeatTimeout) clearTimeout(sseHeartbeatTimeout);
@@ -957,6 +999,26 @@ export function TradingProvider({ children }: { children: ReactNode }) {
         }
       });
     }
+  }, []);
+
+  const requestWebNotifications = useCallback(() => {
+    if (Platform.OS !== "web" || typeof Notification === "undefined") return;
+    if (Notification.permission === "granted") {
+      setWebNotificationEnabled(true);
+      return;
+    }
+    Notification.requestPermission().then((perm) => {
+      const granted = perm === "granted";
+      setWebNotificationEnabled(granted);
+      if (granted) {
+        try {
+          new Notification("LIBARTIN Notifikasi Aktif", {
+            body: "Kamu akan menerima notifikasi saat sinyal BUY/SELL terdeteksi.",
+            icon: "/favicon.ico",
+          });
+        } catch {}
+      }
+    });
   }, []);
 
   // ─── WebSocket ─────────────────────────────────────────────────────────────
@@ -1605,6 +1667,8 @@ export function TradingProvider({ children }: { children: ReactNode }) {
       marketNextOpen,
       notificationEnabled,
       requestNotifications,
+      webNotificationEnabled,
+      requestWebNotifications,
       updateSignalOutcome,
       injectDemoSignal,
       clearDemoSignal,
@@ -1613,8 +1677,8 @@ export function TradingProvider({ children }: { children: ReactNode }) {
       m5Candles, m15Candles, currentPrice, ema50, trend,
       fibLevels, bullFibLevels, bearFibLevels, fibTrend, currentSignal, activeSignal, signalHistory, atr, connectionStatus,
       balance, setBalance, inZone, clearHistory, marketState, marketNextOpen,
-      notificationEnabled, requestNotifications, updateSignalOutcome,
-      injectDemoSignal, clearDemoSignal,
+      notificationEnabled, requestNotifications, webNotificationEnabled, requestWebNotifications,
+      updateSignalOutcome, injectDemoSignal, clearDemoSignal,
     ]
   );
 

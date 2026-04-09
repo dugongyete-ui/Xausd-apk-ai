@@ -241,7 +241,8 @@ async function configureExpoAndLanding(app: express.Application) {
         },
         on: {
           error: (_err: unknown, _req: unknown, res: unknown) => {
-            (res as import("express").Response).status(502).send("Expo web server not ready yet");
+            const r = res as import("express").Response;
+            r.status(200).send(`<!DOCTYPE html><html><head><meta charset="utf-8"><meta http-equiv="refresh" content="3"><title>LIBARTIN</title><style>body{margin:0;background:#0a0a0a;display:flex;align-items:center;justify-content:center;height:100vh;font-family:sans-serif;color:#c9a84c}p{font-size:14px;opacity:.7}</style></head><body><div><p>Memuat LIBARTIN...</p></div></body></html>`);
           },
         },
       });

@@ -55,7 +55,7 @@ export default function SettingsScreen() {
   const insets = useSafeAreaInsets();
   const topPad = Platform.OS === "web" ? 67 : insets.top;
   const botPad = Platform.OS === "web" ? 84 : insets.bottom + 60;
-  const { atr, connectionStatus, candles, notificationEnabled, requestNotifications, injectDemoSignal, clearDemoSignal, activeSignal, currentPrice } = useTrading();
+  const { atr, connectionStatus, candles, notificationEnabled, requestNotifications, webNotificationEnabled, requestWebNotifications, injectDemoSignal, clearDemoSignal, activeSignal, currentPrice } = useTrading();
   const [demoSent, setDemoSent] = useState<"BUY" | "SELL" | null>(null);
 
   const handleDemoSignal = (type: "BUY" | "SELL") => {
@@ -229,7 +229,7 @@ export default function SettingsScreen() {
           </View>
         </View>
 
-        {/* Notification Section */}
+        {/* Notification Section — Mobile */}
         {Platform.OS !== "web" && (
           <View style={styles.section}>
             <Text style={styles.sectionTitle}>NOTIFIKASI</Text>
@@ -278,6 +278,65 @@ export default function SettingsScreen() {
                   {"  "}🔴 Sinyal SELL — entry, SL, TP, R:R{"\n"}
                   {"  "}✅ Take Profit tercapai{"\n"}
                   {"  "}🛑 Stop Loss kena
+                </Text>
+              </View>
+            </View>
+          </View>
+        )}
+
+        {/* Notification Section — Web Browser */}
+        {Platform.OS === "web" && (
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>NOTIFIKASI BROWSER</Text>
+            <View style={styles.card}>
+              <View style={styles.notifRow}>
+                <View style={styles.notifLeft}>
+                  <Ionicons
+                    name={webNotificationEnabled ? "notifications" : "notifications-off"}
+                    size={20}
+                    color={webNotificationEnabled ? C.gold : C.textDim}
+                  />
+                  <View>
+                    <Text style={styles.notifLabel}>Browser Notification</Text>
+                    <Text style={styles.notifSub}>
+                      {webNotificationEnabled
+                        ? "Aktif — Sinyal akan muncul di browser"
+                        : "Nonaktif — Klik untuk aktifkan"}
+                    </Text>
+                  </View>
+                </View>
+                <Pressable
+                  onPress={() => {
+                    if (!webNotificationEnabled) {
+                      requestWebNotifications();
+                    }
+                  }}
+                  style={({ pressed }) => [
+                    styles.webNotifBtn,
+                    webNotificationEnabled && styles.webNotifBtnActive,
+                    { opacity: pressed ? 0.75 : 1 },
+                  ]}
+                >
+                  <Text style={[
+                    styles.webNotifBtnText,
+                    webNotificationEnabled && { color: C.gold },
+                  ]}>
+                    {webNotificationEnabled ? "Aktif ✓" : "Aktifkan"}
+                  </Text>
+                </Pressable>
+              </View>
+              <View style={[styles.divider, { marginHorizontal: 0 }]} />
+              <View style={styles.notifInfoBox}>
+                <Ionicons name="information-circle" size={14} color={C.gold} />
+                <Text style={styles.notifInfoText}>
+                  <Text style={{ color: C.gold, fontFamily: "Inter_600SemiBold" }}>Notifikasi sinyal langsung di browser!</Text>{"\n\n"}
+                  Ketika sinyal BUY atau SELL terdeteksi oleh server, browser kamu akan menampilkan pop-up notifikasi meski tab sedang di-minimize — selama browser terbuka.{"\n\n"}
+                  <Text style={{ color: "#A78BFA", fontFamily: "Inter_600SemiBold" }}>Yang kamu terima:</Text>{"\n"}
+                  {"  "}🟢 Sinyal BUY — entry, SL, TP, R:R{"\n"}
+                  {"  "}🔴 Sinyal SELL — entry, SL, TP, R:R{"\n\n"}
+                  <Text style={{ color: C.textDim, fontSize: 10 }}>
+                    Untuk notifikasi saat browser tertutup, gunakan aplikasi mobile.
+                  </Text>
                 </Text>
               </View>
             </View>
@@ -535,5 +594,24 @@ const styles = StyleSheet.create({
     color: C.textDim,
     lineHeight: 16,
     flex: 1,
+  },
+  webNotifBtn: {
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: C.border,
+    backgroundColor: C.card,
+    minWidth: 80,
+    alignItems: "center",
+  },
+  webNotifBtnActive: {
+    borderColor: C.gold + "60",
+    backgroundColor: C.gold + "15",
+  },
+  webNotifBtnText: {
+    fontFamily: "Inter_600SemiBold",
+    fontSize: 13,
+    color: C.textSub,
   },
 });

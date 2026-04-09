@@ -57,7 +57,7 @@ const EMA50_PERIOD = 50;
 const ATR_PERIOD = 14;
 const M5_ATR_MIN_RATIO = 0.5;
 const MAX_SIGNAL_LOOKAHEAD_BARS = 60; // Max 60 M5 bars (~5 jam) untuk resolve outcome
-const MIN_RR2 = 1.0;                  // Minimum RR di TP2 agar sinyal layak diambil
+const MIN_RR2 = 1.5;                  // Minimum RR di TP2 agar sinyal layak diambil
 
 // ─── CLI Args ──────────────────────────────────────────────────────────────────
 const args = process.argv.slice(2);
@@ -204,13 +204,17 @@ function checkRejection(candle: Candle, trend: "Bullish" | "Bearish", fib: FibLe
     if (candle.close <= candle.open) return false;
     const lowerWick = Math.min(candle.open, candle.close) - candle.low;
     if (lowerWick < body * 0.8) return false;
+    // wick must be inside zone: low between lo and hi (inclusive with small tolerance)
     if (candle.low > hi) return false;
+    if (candle.low < lo - (hi - lo) * 0.15) return false; // allow up to 15% below lower bound
     return true;
   }
   if (candle.close >= candle.open) return false;
   const upperWick = candle.high - Math.max(candle.open, candle.close);
   if (upperWick < body * 0.8) return false;
+  // wick must be inside zone: high between lo and hi (inclusive with small tolerance)
   if (candle.high < lo) return false;
+  if (candle.high > hi + (hi - lo) * 0.15) return false; // allow up to 15% above upper bound
   return true;
 }
 
@@ -218,14 +222,18 @@ function checkEngulfing(prev: Candle, curr: Candle, trend: "Bullish" | "Bearish"
   const prevBody = Math.abs(prev.close - prev.open);
   const currBody = Math.abs(curr.close - curr.open);
   if (prevBody === 0 || currBody === 0) return false;
+  // Current candle body must also be >= 70% of previous candle body (strength requirement)
+  if (currBody < prevBody * 0.70) return false;
   if (trend === "Bullish") {
     if (!(prev.close < prev.open) || !(curr.close > curr.open)) return false;
-    const engulfTarget = prev.close + (prev.open - prev.close) * 0.55;
-    return curr.close >= engulfTarget && curr.open <= prev.close + prevBody * 0.35;
+    // Must engulf at least 65% of prior bearish candle's body (raised from 55%)
+    const engulfTarget = prev.close + (prev.open - prev.close) * 0.65;
+    return curr.close >= engulfTarget && curr.open <= prev.close + prevBody * 0.25;
   }
   if (!(prev.close > prev.open) || !(curr.close < curr.open)) return false;
-  const engulfTarget = prev.close - (prev.close - prev.open) * 0.55;
-  return curr.close <= engulfTarget && curr.open >= prev.close - prevBody * 0.35;
+  // Must engulf at least 65% of prior bullish candle's body (raised from 55%)
+  const engulfTarget = prev.close - (prev.close - prev.open) * 0.65;
+  return curr.close <= engulfTarget && curr.open >= prev.close - prevBody * 0.25;
 }
 
 // ─── Session Filter ────────────────────────────────────────────────────────────
@@ -465,12 +473,6 @@ async function runBacktest() {
   const signals: BacktestSignal[] = [];
   const seenSignalIds = new Set<string>();
 
-  // Shadow stats for ADX filter comparison: track non-trending signals separately
-  // These are NOT pushed to `signals` — they exist only for the regime comparison summary.
-  interface ShadowStat { regime: MarketRegime; outcome: "win_tp2" | "win_breakeven" | "loss" | "expired" }
-  const shadowStats: ShadowStat[] = [];
-  const seenShadowIds = new Set<string>();
-
   // Task 1: per-direction cooldown tracking
   const activeBuyId:  { id: string | null; anchor: number | null } = { id: null, anchor: null };
   const activeSellId: { id: string | null; anchor: number | null } = { id: null, anchor: null };
@@ -593,7 +595,13 @@ async function runBacktest() {
         hi = fib.swingHigh - range * 0.50;
       }
 
-      const candleTouchesZone = dir === "Bearish" ? closedM5.high >= lo : closedM5.low <= hi;
+      // Zone check: candle wick must be INSIDE the fib zone (50%–88.6%), not just touch one boundary
+      // Bearish: high must enter zone from below (between lo and hi + 15% tolerance)
+      // Bullish: low must enter zone from above (between lo - 15% tolerance and hi)
+      const zoneTol = (hi - lo) * 0.15;
+      const candleTouchesZone = dir === "Bearish"
+        ? closedM5.high >= lo && closedM5.high <= hi + zoneTol
+        : closedM5.low  <= hi && closedM5.low  >= lo - zoneTol;
       if (!candleTouchesZone) continue;
 
       // ATR M5 filter
@@ -635,7 +643,7 @@ async function runBacktest() {
       const rr1 = Math.round((tp1Dist / slDistance) * 100) / 100;
       const rr2 = Math.round((tp2Dist / slDistance) * 100) / 100;
 
-      // FIX Bug #2: filter sinyal dengan RR2 < minimum (misalnya TP2 terlalu dekat)
+      // Filter sinyal dengan RR2 < minimum (misalnya TP2 terlalu dekat)
       if (rr2 < MIN_RR2) continue;
 
       // Confluence detection: check if any part of the 61.8%–78.6% entry zone
@@ -656,19 +664,8 @@ async function runBacktest() {
       // Task 5: session tag
       const sessionTag: "active" | "low_confidence" = isActiveSession(closedM5.epoch * 1000) ? "active" : "low_confidence";
 
-      // ADX regime filter — strictly skip signal generation if not trending.
-      // Non-trending setups are evaluated as shadow stats for comparison only.
-      if (regime !== "trending") {
-        if (!seenShadowIds.has(sigId)) {
-          seenShadowIds.add(sigId);
-          const shadowRes = evaluateOutcome(
-            { trend: dir, entryPrice, stopLoss: sl, takeProfit1: tp1, takeProfit2: tp2, signalEpoch: closedM5.epoch },
-            m5All
-          );
-          shadowStats.push({ regime, outcome: shadowRes.outcome });
-        }
-        continue;
-      }
+      // ADX regime: informational only — regime field is recorded on every signal.
+      // No longer used to block signal generation; signals pass through regardless of ADX.
 
       // Signal valid — register tracking slot
       seenSignalIds.add(sigId);
@@ -720,10 +717,8 @@ async function runBacktest() {
 
   // ─── Summary ──────────────────────────────────────────────────────────────
   const isWin = (s: BacktestSignal) => s.outcome === "win_tp2" || s.outcome === "win_breakeven";
-  const isShadowWin = (s: { outcome: string }) => s.outcome === "win_tp2" || s.outcome === "win_breakeven";
 
-  // All signals in `signals` are trending-only (regime = "trending")
-  // Shadow stats hold non-trending candidates for comparison
+  // All signals pass through regardless of ADX regime; regime is recorded per-signal for analysis
   const activeSessionSigs = signals.filter((s) => s.sessionTag === "active");
   const lowConfSigs       = signals.filter((s) => s.sessionTag === "low_confidence");
 
@@ -792,30 +787,20 @@ async function runBacktest() {
   console.log(`  Pin Bar   : ${rejSignals.length} total, ${rejWins} win (${wRate(rejWins, rejSignals.length)})`);
   console.log(`  Engulfing : ${engSignals.length} total, ${engWins} win (${wRate(engWins, engSignals.length)})`);
   console.log("───────────────────────────────────────────────────────────────");
-  // ADX regime comparison: trending (passed filter) vs non-trending shadow stats
-  const rangingShadow = shadowStats.filter((s) => s.regime === "ranging");
-  const unknownShadow = shadowStats.filter((s) => s.regime === "unknown");
-  const trendingWins  = evalSignals.filter(isWin).length;
-  const trendingRes   = evalSignals.filter((s) => s.outcome === "loss" || isWin(s)).length;
-  const rangingWins   = rangingShadow.filter(isShadowWin).length;
-  const unknownWins   = unknownShadow.filter(isShadowWin).length;
-  const rangingRes    = rangingShadow.filter((s) => s.outcome === "loss" || isShadowWin(s)).length;
-  const unknownRes    = unknownShadow.filter((s) => s.outcome === "loss" || isShadowWin(s)).length;
-  const nonTrendTotal = shadowStats.length;
-  const nonTrendWins  = shadowStats.filter(isShadowWin).length;
-  const nonTrendRes   = shadowStats.filter((s) => s.outcome === "loss" || isShadowWin(s)).length;
-  console.log(`  ADX Regime breakdown (trending = generated; ranging/unknown = shadow stats):`);
-  console.log(`    Trending (ADX>25) [✓ sinyal aktif]: ${evalSignals.length} sinyal, ${trendingWins} win — WR ${wRate(trendingWins, trendingRes)} (vs resolved)`);
-  console.log(`    Ranging  (ADX<20) [✗ filter shadow]: ${rangingShadow.length} kandidat, ${rangingWins} win — WR ${wRate(rangingWins, rangingRes)} (vs resolved)`);
-  console.log(`    Unknown  (20-25)  [✗ filter shadow]: ${unknownShadow.length} kandidat, ${unknownWins} win — WR ${wRate(unknownWins, unknownRes)} (vs resolved)`);
-  console.log(`    Non-trending total (shadow):          ${nonTrendTotal} kandidat, ${nonTrendWins} win — WR ${wRate(nonTrendWins, nonTrendRes)} (vs resolved)`);
-  if (evalSignals.length > 0 && nonTrendTotal > 0) {
-    const trendingWR = trendingRes > 0 ? (trendingWins / trendingRes * 100) : 0;
-    const nonTrendWR = nonTrendRes  > 0 ? (nonTrendWins  / nonTrendRes  * 100) : 0;
-    const diff = trendingWR - nonTrendWR;
-    const verdict = diff > 5 ? "✓ ADX filter meningkatkan WR" : diff < -5 ? "✗ ADX filter menurunkan WR" : "≈ ADX filter tidak signifikan";
-    console.log(`    Filter verdict: ${verdict} (trending ${trendingWR.toFixed(1)}% vs non-trending ${nonTrendWR.toFixed(1)}%, delta ${diff > 0 ? "+" : ""}${diff.toFixed(1)}%)`);
-  }
+  // ADX Regime breakdown — informational only (no longer used as entry filter)
+  const trendingSigs = evalSignals.filter((s) => s.regime === "trending");
+  const rangingSigs  = evalSignals.filter((s) => s.regime === "ranging");
+  const unknownSigs  = evalSignals.filter((s) => s.regime === "unknown");
+  const trendingWins = trendingSigs.filter(isWin).length;
+  const rangingWins  = rangingSigs.filter(isWin).length;
+  const unknownWins  = unknownSigs.filter(isWin).length;
+  const trendingRes  = trendingSigs.filter((s) => s.outcome === "loss" || isWin(s)).length;
+  const rangingRes   = rangingSigs.filter((s) => s.outcome === "loss" || isWin(s)).length;
+  const unknownRes   = unknownSigs.filter((s) => s.outcome === "loss" || isWin(s)).length;
+  console.log(`  ADX Regime breakdown (info only — tidak lagi memblok sinyal):`);
+  console.log(`    Trending (ADX>25): ${trendingSigs.length} sinyal, ${trendingWins} win — WR ${wRate(trendingWins, trendingRes)} (vs resolved)`);
+  console.log(`    Ranging  (ADX<20): ${rangingSigs.length} sinyal,  ${rangingWins} win — WR ${wRate(rangingWins, rangingRes)} (vs resolved)`);
+  console.log(`    Unknown  (20-25) : ${unknownSigs.length} sinyal,  ${unknownWins} win — WR ${wRate(unknownWins, unknownRes)} (vs resolved)`);
   console.log("═══════════════════════════════════════════════════════════════\n");
 
   if (signals.length === 0) {
@@ -973,7 +958,11 @@ function simulateBlock(
         hi = fib.swingHigh - range * 0.50;
       }
 
-      const candleTouchesZone = dir === "Bearish" ? closedM5.high >= lo : closedM5.low <= hi;
+      // Zone check: wick must be inside the fib zone (50%–88.6%), same fix as main loop
+      const zoneTolB = (hi - lo) * 0.15;
+      const candleTouchesZone = dir === "Bearish"
+        ? closedM5.high >= lo && closedM5.high <= hi + zoneTolB
+        : closedM5.low  <= hi && closedM5.low  >= lo - zoneTolB;
       if (!candleTouchesZone) continue;
 
       const m5ATR = calcATR(m5Slice.slice(0, -1), ATR_PERIOD);
@@ -1011,7 +1000,7 @@ function simulateBlock(
 
       if (rr2 < MIN_RR2) continue;
 
-      if (regime !== "trending") continue;
+      // ADX no longer blocks signal generation (same as main backtest loop)
 
       seenSignalIds.add(sigId);
       activeTracker.id = sigId;

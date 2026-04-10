@@ -70,6 +70,7 @@ function fetchCandles(granularity: number, startEpoch: number, endEpoch: number)
         ticks_history: SYMBOL,
         start: startEpoch,
         end: endEpoch,
+        count: 4999,              // Deriv default tanpa count = 1000; eksplisit minta max
         granularity,
         style: "candles",
         adjust_start_time: 1,
@@ -274,12 +275,12 @@ async function runBacktest() {
   }
 
   // ─── Replay bar-by-bar ────────────────────────────────────────────────────
-  // Hanya evaluasi bar M5 yang berada dalam window 24 jam terakhir
+  // Hanya evaluasi bar M5 yang berada dalam window DAYS_WINDOW hari terakhir
   const m5BacktestStart = startEpoch;
   const m5BacktestBars = m5All.filter((c) => c.epoch >= m5BacktestStart);
 
   console.log("─── Memulai Simulasi Bar-by-Bar ───────────────────────────────");
-  console.log(`  Total bar M5 dalam 24 jam: ${m5BacktestBars.length}`);
+  console.log(`  Total bar M5 dalam ${DAYS_WINDOW} hari: ${m5BacktestBars.length}`);
   console.log("─────────────────────────────────────────────────────────────\n");
 
   const signals: BacktestSignal[] = [];
@@ -340,7 +341,10 @@ async function runBacktest() {
     // Compute ADX regime for this bar (used for stats and filter)
     const regime = detectMarketRegime(m15Slice);
 
-    const swings = findSwings(m15Slice);
+    // Hitung ATR M15 sekali per-bar di luar loop dir — dipakai oleh findSwings (minRange dinamis)
+    // dan semua filter kualitas sinyal. Sinkron dengan live engine: findSwings(candles, atrM15).
+    const atrM15PerBar = calcATR(m15Slice, ATR_PERIOD);
+    const swings = findSwings(m15Slice, atrM15PerBar);
 
     // Task 1: clear active signal state if it has been resolved by this point
     if (activeBuyId.id !== null) {
@@ -393,7 +397,8 @@ async function runBacktest() {
         }
       }
 
-      const atrM15 = calcATR(m15Slice, ATR_PERIOD);
+      // Gunakan ATR yang sudah dihitung sebelum findSwings (sinkron: live engine hitung ATR dulu)
+      const atrM15 = atrM15PerBar;
       if (atrM15 <= 0) continue;
 
       // Minimum Fibonacci range: swing harus setidaknya 1× ATR M15 (sinkron dengan live engine)
@@ -456,10 +461,16 @@ async function runBacktest() {
       if (slDistance < atrM15 * 0.3) continue;
       if (slDistance < 2.0) continue;
 
-      // Task 3: TP2 = Fib 127.2% + 0.5× ATR M15 (more reachable than 161.8%)
-      const tp2 = dir === "Bearish"
+      // Task 3: TP2 = Fib 127.2% + 0.5× ATR M15, CAP di 3× ATR M15 (sinkron live engine 6e)
+      const tp2Raw = dir === "Bearish"
         ? fib.swingLow - range * 0.272 - atrM15 * 0.5
         : fib.swingHigh + range * 0.272 + atrM15 * 0.5;
+      const maxTp2Dist = atrM15 * 3;
+      const tp2RawDist = Math.abs(tp2Raw - entryPrice);
+      const tp2DistCapped = atrM15 > 0 ? Math.min(tp2RawDist, maxTp2Dist) : tp2RawDist;
+      const tp2 = dir === "Bearish"
+        ? entryPrice - tp2DistCapped
+        : entryPrice + tp2DistCapped;
 
       // TP1: minimum 1:1 RR from entry (SL distance), clamped to not exceed TP2
       const tp1Raw = dir === "Bearish" ? entryPrice - slDistance : entryPrice + slDistance;
@@ -728,7 +739,10 @@ function simulateBlock(
     if (m15Slice.length < EMA50_PERIOD) continue;
 
     const regime = detectMarketRegime(m15Slice);
-    const swings = findSwings(m15Slice);
+
+    // Hitung ATR M15 sebelum findSwings — sinkron dengan live engine
+    const atrM15PerBarWF = calcATR(m15Slice, ATR_PERIOD);
+    const swings = findSwings(m15Slice, atrM15PerBarWF);
 
     if (activeBuyId.id !== null) {
       const existing = signals.find((s) => s.id === activeBuyId.id);
@@ -774,7 +788,8 @@ function simulateBlock(
         }
       }
 
-      const atrM15 = calcATR(m15Slice, ATR_PERIOD);
+      // Gunakan ATR pre-computed sebelum findSwings (sinkron dengan live engine)
+      const atrM15 = atrM15PerBarWF;
       if (atrM15 <= 0) continue;
 
       // Minimum Fibonacci range filter (sinkron dengan live engine)
@@ -830,9 +845,16 @@ function simulateBlock(
       if (slDistance < atrM15 * 0.3) continue;
       if (slDistance < 2.0) continue;
 
-      const tp2 = dir === "Bearish"
+      // TP2 = Fib 127.2% + 0.5× ATR M15, CAP di 3× ATR M15 (sinkron live engine 6e)
+      const tp2RawWF = dir === "Bearish"
         ? fib.swingLow - range * 0.272 - atrM15 * 0.5
         : fib.swingHigh + range * 0.272 + atrM15 * 0.5;
+      const maxTp2DistWF = atrM15 * 3;
+      const tp2RawDistWF = Math.abs(tp2RawWF - entryPrice);
+      const tp2DistCappedWF = atrM15 > 0 ? Math.min(tp2RawDistWF, maxTp2DistWF) : tp2RawDistWF;
+      const tp2 = dir === "Bearish"
+        ? entryPrice - tp2DistCappedWF
+        : entryPrice + tp2DistCappedWF;
 
       const tp1Raw = dir === "Bearish" ? entryPrice - slDistance : entryPrice + slDistance;
       const tp1 = dir === "Bearish"

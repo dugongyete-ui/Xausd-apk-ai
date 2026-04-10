@@ -1281,13 +1281,18 @@ export function TradingProvider({ children }: { children: ReactNode }) {
   const lastBullSwingRef = useRef<{ anchorEpoch: number; pairValue: number } | null>(null);
   const lastBearSwingRef = useRef<{ anchorEpoch: number; pairValue: number } | null>(null);
 
-  // fibTrend: selalu mencerminkan trend M15 live (EMA50).
-  // Fallback ke arah swing terakhir hanya jika trend M15 No Trade/Loading.
+  // fibTrend: mencerminkan ARAH dari fibLevels yang sedang ditampilkan di chart.
+  // Harus selalu sinkron dengan fibLevels — bukan dari M15 EMA trend.
+  // Jika bearFibLevels lebih baru → "Bearish", jika bullFibLevels lebih baru → "Bullish".
   const fibTrend = useMemo((): "Bullish" | "Bearish" | null => {
-    if (trend === "Bullish") return "Bullish";
-    if (trend === "Bearish") return "Bearish";
-    return lastSwingFibTrendRef.current;
-  }, [trend]);
+    if (!bullFibLevels && !bearFibLevels) return null;
+    if (bullFibLevels && bearFibLevels) {
+      const bullAnchor = lastBullSwingRef.current?.anchorEpoch ?? 0;
+      const bearAnchor = lastBearSwingRef.current?.anchorEpoch ?? 0;
+      return bearAnchor >= bullAnchor ? "Bearish" : "Bullish";
+    }
+    return bullFibLevels ? "Bullish" : "Bearish";
+  }, [bullFibLevels, bearFibLevels]);
 
   useEffect(() => {
     if (m15Candles.length < EMA50_PERIOD) {

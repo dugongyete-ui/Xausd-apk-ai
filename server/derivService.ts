@@ -1383,10 +1383,19 @@ class DerivService {
     const trend = getTrend(this.m15Candles);
 
     // Tentukan fib aktif untuk display: pakai fib arah sinyal aktif,
-    // atau fib yang paling baru dari kedua arah jika tidak ada sinyal.
-    const activeFib: FibLevels | null = this.currentSignal
-      ? (this.currentSignal.trend === "Bullish" ? this.bullFibLevels : this.bearFibLevels)
-      : (this.bullFibLevels ?? this.bearFibLevels);
+    // atau fib yang PALING BARU (anchorEpoch terbesar) dari kedua arah jika tidak ada sinyal.
+    // PENTING: jangan gunakan bull ?? bear (akan selalu memilih bull jika keduanya ada).
+    const activeFib: FibLevels | null = (() => {
+      if (this.currentSignal) {
+        return this.currentSignal.trend === "Bullish" ? this.bullFibLevels : this.bearFibLevels;
+      }
+      if (this.bullFibLevels && this.bearFibLevels) {
+        const bullAnchor = this.lastBullSwing?.anchorEpoch ?? 0;
+        const bearAnchor = this.lastBearSwing?.anchorEpoch ?? 0;
+        return bearAnchor >= bullAnchor ? this.bearFibLevels : this.bullFibLevels;
+      }
+      return this.bullFibLevels ?? this.bearFibLevels;
+    })();
 
     let inZone = false;
     if (this.currentPrice !== null) {
@@ -1418,12 +1427,20 @@ class DerivService {
       winRate: resolved > 0 ? Math.round((wins / resolved) * 100) : 0,
     };
 
-    // fibTrend: reflect live M15 trend so UI & AI always see current market direction.
-    // Falls back to last known signal direction if trend is No Trade / Loading.
-    const liveFibTrend: "Bullish" | "Bearish" | null =
-      trend === "Bullish" ? "Bullish"
-      : trend === "Bearish" ? "Bearish"
-      : this.fibTrend;
+    // fibTrend: mencerminkan ARAH dari activeFib yang ditampilkan di chart,
+    // bukan M15 EMA trend — agar label zona sinkron dengan struktur Fibonacci aktif.
+    // Fallback ke this.fibTrend (arah sinyal terakhir) jika tidak ada fib sama sekali.
+    const liveFibTrend: "Bullish" | "Bearish" | null = (() => {
+      if (this.currentSignal) return this.currentSignal.trend;
+      if (this.bullFibLevels && this.bearFibLevels) {
+        const bullAnchor = this.lastBullSwing?.anchorEpoch ?? 0;
+        const bearAnchor = this.lastBearSwing?.anchorEpoch ?? 0;
+        return bearAnchor >= bullAnchor ? "Bearish" : "Bullish";
+      }
+      if (this.bullFibLevels) return "Bullish";
+      if (this.bearFibLevels) return "Bearish";
+      return this.fibTrend;
+    })();
 
     const atrM15Val = this.m15Candles.length >= ATR_PERIOD
       ? calcATR(this.m15Candles, ATR_PERIOD)

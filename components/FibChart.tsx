@@ -432,8 +432,8 @@ export function FibChart() {
           )}
 
           {/* ── Fibonacci Structure Lines ── */}
-          {fibLevels && fibTrend && (() => {
-            const trendUp = fibTrend === "Bullish";
+          {fibLevels && activeFibTrend && (() => {
+            const trendUp = activeFibTrend === "Bullish";
             const hasSignal = !!activeSig;
             return (
               <>

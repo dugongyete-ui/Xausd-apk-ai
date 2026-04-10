@@ -345,7 +345,7 @@ function EMARow() {
       <View style={styles.emaItem}>
         <Text style={styles.emaLabel}>M5</Text>
         <Text style={[styles.emaValue, { color: candles.length > 0 ? C.green : C.textDim }]}>
-          {candles.length}/100
+          {candles.length}/200
         </Text>
       </View>
     </View>

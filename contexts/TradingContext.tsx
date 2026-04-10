@@ -1462,25 +1462,24 @@ export function TradingProvider({ children }: { children: ReactNode }) {
       const slDistance = Math.abs(entryPrice - sl);
       if (slDistance < atrVal * 0.1 || atrVal < 0.1) return null;
 
-      // TP1: Fibonacci 127.2% extension dari swing impulse (struktur-anchored)
-      // Level 127.2% = swingHigh + range × 0.272 (Bullish) / swingLow - range × 0.272 (Bearish)
-      const tp1FibLevel = dir === "Bearish"
-        ? fibLev.swingLow - range * 0.272   // 127.2% ext: bearish impuls turun
-        : fibLev.swingHigh + range * 0.272; // 127.2% ext: bullish impuls naik
-      const tp1AtrLevel = dir === "Bearish"
-        ? entryPrice - atrVal * 1.0
-        : entryPrice + atrVal * 1.0;
-      // Ambil target yang lebih konservatif (lebih dekat ke entry)
-      const tp1 = dir === "Bearish"
-        ? Math.max(tp1FibLevel, tp1AtrLevel) // lebih besar = lebih dekat untuk SELL
-        : Math.min(tp1FibLevel, tp1AtrLevel); // lebih kecil = lebih dekat untuk BUY
-      const tp1Dist = Math.abs(tp1 - entryPrice);
-
-      // TP2: Fibonacci 161.8% extension dari swing impulse (struktur-anchored)
-      // Level 161.8% = swingHigh + range × 0.618 (Bullish) / swingLow - range × 0.618 (Bearish)
+      // TP2: Fib 127.2% extension + 0.5× ATR M15, dikap 3× ATR M15 dari entry
+      // Sesuai dengan formula server (derivService.ts)
+      const tp2Raw = dir === "Bearish"
+        ? fibLev.swingLow - range * 0.272 - atrVal * 0.5
+        : fibLev.swingHigh + range * 0.272 + atrVal * 0.5;
+      const maxTp2Dist = atrVal * 3;
+      const tp2RawDist = Math.abs(tp2Raw - entryPrice);
+      const tp2DistCapped = atrVal > 0 ? Math.min(tp2RawDist, maxTp2Dist) : tp2RawDist;
       const tp2 = dir === "Bearish"
-        ? fibLev.swingLow - range * 0.618   // 161.8% ext: bearish impuls turun
-        : fibLev.swingHigh + range * 0.618; // 161.8% ext: bullish impuls naik
+        ? entryPrice - tp2DistCapped
+        : entryPrice + tp2DistCapped;
+
+      // TP1: entry ± slDistance (RR 1:1), tidak melebihi TP2
+      const tp1Raw = dir === "Bearish" ? entryPrice - slDistance : entryPrice + slDistance;
+      const tp1 = dir === "Bearish"
+        ? Math.max(tp1Raw, tp2)  // SELL: tp1 tidak boleh di bawah tp2
+        : Math.min(tp1Raw, tp2); // BUY:  tp1 tidak boleh di atas tp2
+      const tp1Dist = Math.abs(tp1 - entryPrice);
       const tp2Dist = Math.abs(tp2 - entryPrice);
 
       const riskAmount = balance * 0.01;

@@ -116,8 +116,8 @@ Konfirmasi M5 (WAJIB): Candle M5 CLOSED yang wicknya menyentuh zona 50%-88.6% + 
   - Engulfing bullish: body candle current menutup ≥ 75% dari body candle sebelumnya, candle bukan doji, dan harus ada salah satu: level round number (.25/.50) dalam 2 poin ATAU swing point M5 dalam 5 candle terakhir
 Entry: Harga close candle M5 yang memenuhi konfirmasi.
 SL: Di bawah Swing Low anchor fractal. Jarak minimum SL = max(0.3× ATR14 M15, 2.0 poin).
-TP1: Entry + jarak SL×1 (RR 1:1), dikap 15 poin.
-TP2: Level Fibonacci extension -27.2% dari swing + 0.5× ATR14 M15, dikap 3× jarak SL dari entry (maks ~28 poin).
+TP1: Entry + jarak SL×1 (RR 1:1), tidak melebihi TP2.
+TP2: Level Fibonacci extension 127.2% dari swing + 0.5× ATR14 M15, dikap 3× ATR14 M15 dari entry.
 Breakeven: Setelah TP1 tercapai, SL otomatis pindah ke harga entry. Jika kemudian harga kena SL breakeven → outcome WIN.
 
 SETUP SELL (Fibonacci Bearish):

@@ -157,8 +157,8 @@ export default function SettingsScreen() {
             <InfoRow
               icon="database"
               label="M5 Candles"
-              value={`${candles.length} / 10`}
-              valueColor={candles.length >= 10 ? C.green : C.gold}
+              value={`${candles.length} / 200`}
+              valueColor={candles.length >= 50 ? C.green : C.gold}
             />
             <View style={styles.divider} />
             <InfoRow

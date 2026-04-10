@@ -21,6 +21,10 @@ import {
 } from "@/services/NotificationService";
 import { playSignalSound, unlockAudioContext } from "@/services/SoundService";
 import { toWIBString, DERIV_WS_URL as SHARED_WS_URL } from "@/shared/utils";
+import {
+  checkRejection as sharedCheckRejection,
+  checkEngulfing as sharedCheckEngulfing,
+} from "@/shared/indicators";
 
 const BACKGROUND_FETCH_TASK = "libartin-bg-fetch";
 
@@ -247,12 +251,12 @@ function calcATR(candles: Candle[], period: number): number {
 // hitungan candle tetap.
 //
 // Kriteria impulse valid:
-//  ① Span: 5–20 candle M15 (gerakan satu arah, bukan sideways)
-//  ② Range minimal: 8 poin (filter noise)
-//  ③ Arah bersih: tidak ada candle yang break > 25% range dari ujung start
+//  ① Span: 5–40 candle M15 (gerakan satu arah, bukan sideways)
+//  ② Range minimal: max(3 poin, 0.3× ATR M15) — filter noise relatif volatilitas
+//  ③ Arah bersih: tidak ada candle yang break > 30% range dari ujung start
 //  ④ Trending: rata-rata close paruh kedua > paruh pertama (bullish)
 //     atau rata-rata close paruh kedua < paruh pertama (bearish)
-//  ⑤ Trend: Harga > EMA50 untuk bullish, Harga < EMA50 untuk bearish
+//  ⑤ Tidak ada EMA trend gate di sini — diberlakukan di tryDetect (sinyal detection)
 //
 // Cara tarik:
 //  Uptrend:   SwingLow (start) → SwingHigh (end)  anchorEpoch = SwingHigh.epoch
@@ -382,59 +386,10 @@ function calcFib(swingHigh: number, swingLow: number, trend: "Bullish" | "Bearis
 }
 
 // ─── M5 Entry confirmation ───────────────────────────────────────────────────
-// Rejection Pin Bar — diperlonggar:
-// ① Candle arah sesuai trend (bullish close / bearish close)
-// ② Wick dominan ≥ 0.8× body (dari 1.5× — lebih permisif)
-// ③ Wick menyentuh/masuk zona DIPERLUAS (50%–88.6%)
-// Body center check DIHAPUS — terlalu ketat
-// Hanya candle CLOSED yang boleh dievaluasi (dipastikan dari caller)
-function checkRejection(candle: Candle, trend: "Bullish" | "Bearish", fib: FibLevels): boolean {
-  const body = Math.abs(candle.close - candle.open);
-  if (body === 0) return false;
-
-  // Zona diperluas: 50%–88.6%
-  const range = Math.abs(fib.swingHigh - fib.swingLow);
-  let lo: number, hi: number;
-  if (trend === "Bearish") {
-    lo = fib.swingLow + range * 0.50;
-    hi = fib.swingLow + range * 0.886;
-  } else {
-    lo = fib.swingHigh - range * 0.886;
-    hi = fib.swingHigh - range * 0.50;
-  }
-
-  if (trend === "Bullish") {
-    if (candle.close <= candle.open) return false;
-    const lowerWick = Math.min(candle.open, candle.close) - candle.low;
-    if (lowerWick < body * 0.8) return false;
-    if (candle.low > hi) return false;
-    return true;
-  }
-  if (candle.close >= candle.open) return false;
-  const upperWick = candle.high - Math.max(candle.open, candle.close);
-  if (upperWick < body * 0.8) return false;
-  if (candle.high < lo) return false;
-  return true;
-}
-
-// Checks last two M5 candles for engulfing pattern — diperlonggar untuk scalping (partial engulf 55%)
-function checkEngulfing(prev: Candle, curr: Candle, trend: "Bullish" | "Bearish"): boolean {
-  const prevBody = Math.abs(prev.close - prev.open);
-  const currBody = Math.abs(curr.close - curr.open);
-  if (prevBody === 0 || currBody === 0) return false;
-  if (trend === "Bullish") {
-    const prevBear = prev.close < prev.open;
-    const currBull = curr.close > curr.open;
-    if (!prevBear || !currBull) return false;
-    const engulfTarget = prev.close + (prev.open - prev.close) * 0.55;
-    return curr.close >= engulfTarget && curr.open <= prev.close + prevBody * 0.35;
-  }
-  const prevBull = prev.close > prev.open;
-  const currBear = curr.close < curr.open;
-  if (!prevBull || !currBear) return false;
-  const engulfTarget = prev.close - (prev.close - prev.open) * 0.55;
-  return curr.close <= engulfTarget && curr.open >= prev.close - prevBody * 0.35;
-}
+// Gunakan implementasi bersama dari shared/indicators.ts agar identik dengan server.
+// Ini memastikan sinyal yang dideteksi client sesuai persis dengan sinyal server.
+const checkRejection = sharedCheckRejection;
+const checkEngulfing = sharedCheckEngulfing;
 
 
 function parseCandle(c: { open: string; high: string; low: string; close: string; epoch: number }): Candle | null {
@@ -1437,6 +1392,23 @@ export function TradingProvider({ children }: { children: ReactNode }) {
       }
 
       const range = Math.abs(fibLev.swingHigh - fibLev.swingLow);
+
+      // EMA20 M5 alignment: BUY hanya valid jika EMA20 M5 > EMA50 M5
+      if (m5Candles.length >= EMA50_PERIOD) {
+        const m5Closes = m5Candles.map((c) => c.close);
+        const ema20m5 = calcEMA(m5Closes, EMA20_PERIOD);
+        const ema50m5 = calcEMA(m5Closes, EMA50_PERIOD);
+        if (ema20m5.length > 0 && ema50m5.length > 0) {
+          const ema20Val = ema20m5[ema20m5.length - 1];
+          const ema50Val = ema50m5[ema50m5.length - 1];
+          if (dir === "Bullish" && ema20Val <= ema50Val) return null;
+          if (dir === "Bearish" && ema20Val >= ema50Val) return null;
+        }
+      }
+
+      // Fibonacci range harus ≥ 1× ATR M15 agar entry zone dan TP punya ruang cukup
+      if (range < atrVal * 1.0) return null;
+
       let lo: number, hi: number;
       if (dir === "Bearish") {
         lo = fibLev.swingLow + range * 0.50;
@@ -1446,24 +1418,45 @@ export function TradingProvider({ children }: { children: ReactNode }) {
         hi = fibLev.swingHigh - range * 0.50;
       }
 
-      // Zone check: HANYA candle closed, tidak ada live price (anti-repaint)
+      // Zone check: wick candle harus masuk zona fib (50%–88.6%) dengan toleransi 15%
+      const zoneTol = (hi - lo) * 0.15;
       const candleTouchesZone = dir === "Bearish"
-        ? closedM5.high >= lo
-        : closedM5.low <= hi;
+        ? closedM5.high >= lo && closedM5.high <= hi + zoneTol
+        : closedM5.low  <= hi && closedM5.low  >= lo - zoneTol;
       if (!candleTouchesZone) return null;
+
+      // Doji filter: body harus ≥ 30% dari full range candle
+      const m5FullRange = closedM5.high - closedM5.low;
+      const m5Body = Math.abs(closedM5.close - closedM5.open);
+      if (m5FullRange > 0 && m5Body < m5FullRange * 0.3) return null;
 
       const isRejection = checkRejection(closedM5, dir, fibLev);
       const isEngulfing = checkEngulfing(prevM5, closedM5, dir);
       if (!isRejection && !isEngulfing) return null;
 
+      // Engulfing WAJIB ada confluence: near round number (.25/.50) ATAU near swing point M5
+      if (isEngulfing && !isRejection) {
+        const entryRef = closedM5.close;
+        const nearRound = [25, 50].some((step) => {
+          const nearest = Math.round(entryRef / step) * step;
+          return Math.abs(entryRef - nearest) <= 2;
+        });
+        const recentM5 = m5Candles.slice(-12, -2);
+        const nearSwingM5 = [...recentM5.map((c) => c.high), ...recentM5.map((c) => c.low)].some(
+          (p) => Math.abs(p - entryRef) <= 3
+        );
+        if (!nearRound && !nearSwingM5) return null;
+      }
+
       const confirmationType: ConfirmationType = isEngulfing ? "engulfing" : "rejection";
       const sl = dir === "Bullish" ? fibLev.swingLow : fibLev.swingHigh;
       const entryPrice = closedM5.close;
       const slDistance = Math.abs(entryPrice - sl);
-      if (slDistance < atrVal * 0.1 || atrVal < 0.1) return null;
+
+      // SL minimum: max(0.3× ATR M15, 2.0 poin) — filter noise
+      if (slDistance < atrVal * 0.3 || slDistance < 2.0 || atrVal < 0.1) return null;
 
       // TP2: Fib 127.2% extension + 0.5× ATR M15, dikap 3× ATR M15 dari entry
-      // Sesuai dengan formula server (derivService.ts)
       const tp2Raw = dir === "Bearish"
         ? fibLev.swingLow - range * 0.272 - atrVal * 0.5
         : fibLev.swingHigh + range * 0.272 + atrVal * 0.5;
@@ -1482,10 +1475,13 @@ export function TradingProvider({ children }: { children: ReactNode }) {
       const tp1Dist = Math.abs(tp1 - entryPrice);
       const tp2Dist = Math.abs(tp2 - entryPrice);
 
-      const riskAmount = balance * 0.01;
-      const lotSize = riskAmount / slDistance;
+      // Reject sinyal dengan RR2 terlalu kecil (minimum 1.5)
       const rr1 = tp1Dist / slDistance;
       const rr2 = tp2Dist / slDistance;
+      if (rr2 < 1.5) return null;
+
+      const riskAmount = balance * 0.01;
+      const lotSize = riskAmount / slDistance;
 
       const signal: TradingSignal = {
         id: sigKey,

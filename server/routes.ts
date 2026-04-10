@@ -82,13 +82,23 @@ export async function registerRoutes(app: Express): Promise<Server> {
       : "Bearish";
     const sl = fib ? (trend === "Bearish" ? fib.swingHigh : fib.swingLow) : price + (trend === "Bearish" ? 15 : -15);
     const slDist = Math.abs(price - sl);
-    const tp1Dist = Math.min(slDist * 1.0, 15);
-    const tp1 = trend === "Bearish" ? price - tp1Dist : price + tp1Dist;
-    const extDist = fib ? Math.abs(fib.extensionNeg27 - price) : slDist * 1.8;
-    const tp2Dist = Math.min(Math.max(extDist, slDist * 1.8, 10), 28);
+    const atrM15 = snapshot.atrM15 ?? 0;
+    const fibRange = fib ? Math.abs(fib.swingHigh - fib.swingLow) : slDist * 2;
+    // TP2: Fib 127.2% extension + 0.5×ATR, dikap 3×ATR (sama dengan sinyal real)
+    const tp2Raw = fib
+      ? (trend === "Bearish"
+          ? fib.swingLow - fibRange * 0.272 - atrM15 * 0.5
+          : fib.swingHigh + fibRange * 0.272 + atrM15 * 0.5)
+      : (trend === "Bearish" ? price - slDist * 2 : price + slDist * 2);
+    const maxTp2Dist = atrM15 > 0 ? atrM15 * 3 : slDist * 2;
+    const tp2Dist = Math.min(Math.abs(tp2Raw - price), maxTp2Dist);
     const tp2 = trend === "Bearish" ? price - tp2Dist : price + tp2Dist;
+    // TP1: entry ± slDistance (RR 1:1), tidak melebihi TP2
+    const tp1Raw = trend === "Bearish" ? price - slDist : price + slDist;
+    const tp1 = trend === "Bearish" ? Math.max(tp1Raw, tp2) : Math.min(tp1Raw, tp2);
+    const tp1Dist = Math.abs(tp1 - price);
     const rr1 = slDist > 0 ? Math.round((tp1Dist / slDist) * 100) / 100 : 1.0;
-    const rr2 = slDist > 0 ? Math.round((tp2Dist / slDist) * 100) / 100 : 1.8;
+    const rr2 = slDist > 0 ? Math.round((tp2Dist / slDist) * 100) / 100 : 2.0;
     derivService.injectTestSignal({ price, trend, sl, tp: tp1, tp2, rr: rr1, rr2 });
     res.json({ ok: true, price, trend, sl, tp1, tp2, rr1, rr2, tokens: derivService.getTokenCount() });
   });

@@ -113,7 +113,7 @@ Konfirmasi trend: Harga di atas EMA50 M15 (konteks makro) dan EMA20 M5 di atas E
 Zona entry (Golden Zone): Retracement 61.8% hingga 78.6% dari swing tersebut. Filter masuk zona juga cek 50%-88.6% untuk pola wick.
 Konfirmasi M5 (WAJIB): Candle M5 CLOSED yang wicknya menyentuh zona 50%-88.6% + salah satu pola berikut:
   - Pin Bar Rejection bullish: wick bawah ≥ 0.8× body candle, candle bukan doji (body ≥ 30% range total)
-  - Engulfing bullish: body candle current menutup ≥ 75% dari body candle sebelumnya, candle bukan doji, dan harus ada salah satu: level round number (.25/.50) dalam 2 poin ATAU swing point M5 dalam 5 candle terakhir
+  - Engulfing bullish: body candle current ≥ 70% dari body candle sebelumnya, close menutup ≥ 65% dari range body sebelumnya, bukan doji, dan WAJIB ada confluence: level round number (.25/.50) dalam 2 poin ATAU swing point M5 dalam 3 poin terdekat
 Entry: Harga close candle M5 yang memenuhi konfirmasi.
 SL: Di bawah Swing Low anchor fractal. Jarak minimum SL = max(0.3× ATR14 M15, 2.0 poin).
 TP1: Entry + jarak SL×1 (RR 1:1), tidak melebihi TP2.
@@ -124,7 +124,7 @@ SETUP SELL (Fibonacci Bearish):
 Impulse: Swing High → Swing Low pada M15 (simetris dengan BUY, arah terbalik).
 Konfirmasi trend: Harga di bawah EMA50 M15, EMA20 M5 di bawah EMA50 M5.
 Zona entry: Retracement 61.8%-78.6% dari swing turun (harga rebound ke atas dari swing low).
-Konfirmasi M5: Candle M5 closed + Pin Bar Rejection bearish (wick atas ≥ 0.8× body) ATAU Engulfing bearish (body ≥ 75% candle sebelumnya + round number/swing confluence).
+Konfirmasi M5: Candle M5 closed + Pin Bar Rejection bearish (wick atas ≥ 0.8× body) ATAU Engulfing bearish (body ≥ 70% + close ≥ 65% dari body sebelumnya + round number/swing confluence WAJIB).
 SL: Di atas Swing High anchor. TP1 dan TP2: sama seperti BUY, arah terbalik.
 
 JAM TRADING XAUUSD — PENTING:
